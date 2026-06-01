@@ -11,10 +11,10 @@ const defaultCorsOrigins = [
 ];
 
 function getCorsOrigins(): string[] {
-  return (
-    process.env.CORS_ORIGINS?.split(',').map((origin) => origin.trim()) ??
-    defaultCorsOrigins
-  ).filter(Boolean);
+  const envOrigins =
+    process.env.CORS_ORIGINS?.split(',').map((origin) => origin.trim()) ?? [];
+
+  return [...new Set([...defaultCorsOrigins, ...envOrigins].filter(Boolean))];
 }
 
 async function bootstrap(): Promise<void> {
