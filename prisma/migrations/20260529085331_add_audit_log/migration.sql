@@ -1,0 +1,28 @@
+BEGIN TRY
+
+BEGIN TRAN;
+
+-- CreateTable
+CREATE TABLE [dbo].[AuditLog] (
+    [id] NVARCHAR(1000) NOT NULL,
+    [userId] NVARCHAR(1000),
+    [action] NVARCHAR(1000) NOT NULL,
+    [entityType] NVARCHAR(1000) NOT NULL,
+    [entityId] NVARCHAR(1000) NOT NULL,
+    [metadata] NVARCHAR(1000),
+    [createdAt] DATETIME2 NOT NULL CONSTRAINT [AuditLog_createdAt_df] DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT [AuditLog_pkey] PRIMARY KEY CLUSTERED ([id])
+);
+
+COMMIT TRAN;
+
+END TRY
+BEGIN CATCH
+
+IF @@TRANCOUNT > 0
+BEGIN
+    ROLLBACK TRAN;
+END;
+THROW
+
+END CATCH

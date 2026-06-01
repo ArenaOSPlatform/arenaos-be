@@ -1,0 +1,364 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String  @id @default(cuid())
+  username         String  @unique
+  email            String  @unique
+  passwordHash     String
+  refreshTokenHash String?
+  /// UserRole values: PLAYER, ORGANIZER, ADMIN
+  role             String  @default("PLAYER")
+  avatarUrl        String?
+  status           String  @default("ACTIVE")
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  captainTeams    Team[]
+  teamMembers     TeamMember[]
+  sentInvites     TeamInvite[] @relation("InviteSender")
+  receivedInvites TeamInvite[] @relation("InviteReceiver")
+  tournaments     Tournament[]
+  organizerRequests OrganizerRequest[] @relation("OrganizerRequestUser")
+  reviewedOrganizerRequests OrganizerRequest[] @relation("OrganizerRequestReviewer")
+}
+
+model OrganizerRequest {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation("OrganizerRequestUser", fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  reason      String?
+  experience  String?
+  portfolioUrl String?
+
+  status String @default("PENDING")
+
+  reviewedBy String?
+  reviewer   User?   @relation("OrganizerRequestReviewer", fields: [reviewedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewNote String?
+  reviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Team {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  logoUrl     String?
+  description String?
+
+  captainId String
+  captain   User   @relation(fields: [captainId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  members TeamMember[]
+
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  invites       TeamInvite[]
+  registrations TournamentRegistration[]
+  leaderboardEntries TournamentLeaderboard[]
+  rankingHistories TeamRankingHistory[]
+  totalMatchesPlayed Int @default(0)
+  totalWins          Int @default(0)
+  totalLosses        Int @default(0)
+  championCount      Int @default(0)
+  overallWinRate     Float @default(0)
+}
+
+model TeamMember {
+  id String @id @default(cuid())
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  joinedAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+}
+
+model TeamInvite {
+  id String @id @default(cuid())
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  inviterId String
+  inviter   User   @relation("InviteSender", fields: [inviterId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  inviteeId String
+  invitee   User   @relation("InviteReceiver", fields: [inviteeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  status String @default("PENDING")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, inviteeId])
+}
+
+model Tournament {
+  id          String  @id @default(cuid())
+  name        String
+  game        String
+  description String?
+  bannerUrl   String?
+
+  maxTeams Int
+  teamSize Int
+  format   String
+
+  prizePool String?
+  rules     String?
+
+  status String @default("DRAFT")
+  approvalSubmittedAt DateTime?
+  approvalReviewedAt  DateTime?
+  approvalReviewedBy  String?
+  approvalRejectReason String?
+  championTeamId String?
+  runnerUpTeamId String?
+  completedAt DateTime?
+
+  startDate            DateTime
+  endDate              DateTime?
+  registrationDeadline DateTime
+
+  organizerId String
+  organizer   User   @relation(fields: [organizerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  registrations TournamentRegistration[]
+  bracket       Bracket?
+  matches       Match[]
+  leaderboardEntries TournamentLeaderboard[]
+  rankingHistories TeamRankingHistory[]
+  announcements TournamentAnnouncement[]
+}
+
+model TournamentRegistration {
+  id String @id @default(cuid())
+
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  status       String  @default("PENDING")
+  rejectReason String?
+  lineupData   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tournamentId, teamId])
+}
+
+model Bracket {
+  id String @id @default(cuid())
+
+  tournamentId String     @unique
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  format String
+  status String @default("GENERATED")
+
+  matches Match[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Match {
+  id String @id @default(cuid())
+
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  bracketId String
+  bracket   Bracket @relation(fields: [bracketId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  roundNumber Int
+  matchNumber Int
+
+  teamAId String?
+  teamBId String?
+
+  winnerId String?
+
+  scoreA Int @default(0)
+  scoreB Int @default(0)
+  pendingScoreA Int?
+  pendingScoreB Int?
+  resultStatus String?
+  resultSubmittedBy String?
+  resultSubmittedTeamId String?
+  resultSubmittedAt DateTime?
+  resultEvidenceId String?
+
+  status String @default("PENDING")
+
+  teamACheckedInAt DateTime?
+  teamBCheckedInAt DateTime?
+  teamACheckedInBy String?
+  teamBCheckedInBy String?
+
+  scheduledAt   DateTime?
+  livestreamUrl String?
+  roomCode      String?
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  evidences MatchEvidence[]
+  disputes  Dispute[]
+
+  nextMatchId String?
+  nextSlot    String?
+}
+
+model MatchEvidence {
+  id String @id @default(cuid())
+
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  submittedBy String
+
+  imageUrl String
+  note     String?
+
+  createdAt DateTime @default(now())
+}
+
+model Dispute {
+  id String @id @default(cuid())
+
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  createdBy String
+
+  reason      String
+  description String?
+
+  status   String  @default("OPEN")
+  decision String?
+
+  resolvedBy String?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TournamentLeaderboard {
+  id String @id @default(cuid())
+
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  rank          Int   @default(0)
+  highestRank   Int   @default(0)
+  matchesPlayed Int   @default(0)
+  wins          Int   @default(0)
+  losses        Int   @default(0)
+  points        Int   @default(0)
+  winRate       Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tournamentId, teamId])
+}
+
+model TeamRankingHistory {
+  id String @id @default(cuid())
+
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  matchId String
+
+  rank          Int
+  highestRank   Int
+  matchesPlayed Int
+  wins          Int
+  losses        Int
+  points        Int
+  winRate       Float
+
+  createdAt DateTime @default(now())
+
+  @@unique([tournamentId, teamId, matchId])
+}
+
+model TournamentAnnouncement {
+  id String @id @default(cuid())
+
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  createdBy String
+
+  title   String
+  content String @db.NVarChar(Max)
+  type    String @default("INFO")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  userId String?
+
+  action String
+
+  entityType String
+
+  entityId String
+
+  metadata String?
+
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id String @id @default(cuid())
+
+  userId  String
+  title   String
+  message String
+  type    String
+
+  isRead Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  metadata String?
+}
