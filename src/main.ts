@@ -5,11 +5,23 @@ import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
+const defaultCorsOrigins = [
+  'http://localhost:5173',
+  'https://arenaos-fe.vercel.app',
+];
+
+function getCorsOrigins(): string[] {
+  return (
+    process.env.CORS_ORIGINS?.split(',').map((origin) => origin.trim()) ??
+    defaultCorsOrigins
+  ).filter(Boolean);
+}
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   app.enableCors({
-    origin: 'http://localhost:5173',
+    origin: getCorsOrigins(),
     credentials: true,
   });
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
