@@ -14,6 +14,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { OrganizerRequestsModule } from './modules/organizer-requests/organizer-requests.module';
 import { LeaderboardsModule } from './modules/leaderboards/leaderboards.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
+import { LandingModule } from './modules/landing/landing.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -34,6 +35,7 @@ import { AppService } from './app.service';
     OrganizerRequestsModule,
     LeaderboardsModule,
     UploadsModule,
+    LandingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
