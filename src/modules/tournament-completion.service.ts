@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { AuditLogsService } from './audit-logs/audit-logs.service';
 import { NotificationsService } from './notifications/notifications.service';
+import { RealtimeGateway } from './realtime/realtime/realtime.gateway';
 
 type MatchCompletionSource =
   | 'CONFIRM_MATCH_RESULT'
@@ -14,6 +15,7 @@ export class TournamentCompletionService {
     private readonly prisma: PrismaService,
     private readonly auditLogsService: AuditLogsService,
     private readonly notificationsService: NotificationsService,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
   private async recomputeTeamAggregates(teamIds: string[]) {
@@ -277,6 +279,22 @@ export class TournamentCompletionService {
         metadata,
       }),
     ]);
+
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'tournament:status_changed',
+      updatedTournament,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      metadata,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'leaderboard:updated',
+      metadata,
+    );
 
     return updatedTournament;
   }

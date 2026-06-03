@@ -98,6 +98,8 @@ describe('Team Registration E2E', () => {
       .set('Authorization', `Bearer ${captainToken}`)
       .send({
         name: `Team Registration E2E ${runId}`,
+        game: 'Valorant',
+        region: 'VN',
         description: 'Team registration E2E test team',
       })
       .expect(201);
@@ -154,7 +156,7 @@ describe('Team Registration E2E', () => {
 
   it('should approve registration', async () => {
     const res = await request(app.getHttpServer())
-      .post(`/tournaments/registrations/${registrationId}/approve`)
+      .post(`/registrations/${registrationId}/approve`)
       .set('Authorization', `Bearer ${organizerToken}`)
       .expect(201);
     const body = res.body as unknown as RegistrationResponse;

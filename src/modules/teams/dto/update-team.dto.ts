@@ -8,6 +8,14 @@ export class UpdateTeamDto {
 
   @IsOptional()
   @IsString()
+  game?: string;
+
+  @IsOptional()
+  @IsString()
+  region?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
 
   @IsOptional()

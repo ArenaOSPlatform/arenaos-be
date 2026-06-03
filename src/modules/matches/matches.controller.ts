@@ -14,6 +14,7 @@ import { DisputeMatchResultDto } from './dto/dispute-match-result.dto';
 import { ScheduleMatchDto } from './dto/schedule-match.dto';
 import { SubmitMatchResultDto } from './dto/submit-match-result.dto';
 import { UpdateLivestreamDto } from './dto/update-livestream.dto';
+import { UpdateMatchResultDto } from './dto/update-match-result.dto';
 import { MatchesService } from './matches.service';
 
 @Controller('matches')
@@ -39,7 +40,6 @@ export class MatchesController {
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id/schedule')
-  @Post(':id/schedule')
   scheduleMatch(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -59,8 +59,7 @@ export class MatchesController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post(':id/submit-result')
-  @Post(':id/result/submit')
+  @Post([':id/submit-result', ':id/result/submit'])
   submitResult(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -70,20 +69,33 @@ export class MatchesController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post(':id/confirm-result')
-  @Post(':id/result/confirm')
+  @Post([':id/confirm-result', ':id/result/confirm'])
   confirmResult(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.matchesService.confirmResult(id, user.sub);
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post(':id/dispute')
-  @Post(':id/result/dispute')
+  @Post([
+    ':id/reject-result',
+    ':id/disputes',
+    ':id/dispute',
+    ':id/result/dispute',
+  ])
   disputeResult(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
     @Body() dto: DisputeMatchResultDto,
   ) {
     return this.matchesService.disputeResult(id, user.sub, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/complete')
+  completeMatch(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateMatchResultDto,
+  ) {
+    return this.matchesService.updateResult(id, user.sub, dto);
   }
 }

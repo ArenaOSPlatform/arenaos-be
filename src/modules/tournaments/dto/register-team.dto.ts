@@ -2,6 +2,10 @@ import { ArrayUnique, IsArray, IsOptional, IsString } from 'class-validator';
 
 export class RegisterTeamDto {
   @IsOptional()
+  @IsString()
+  teamId?: string;
+
+  @IsOptional()
   @IsArray()
   @ArrayUnique()
   @IsString({ each: true })

@@ -1,8 +1,21 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { VerifyResetOtpDto } from './dto/verify-reset-otp.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RefreshTokenGuard } from './guards/refresh-token.guard';
 import { Roles } from './decorator/roles.decorator';
@@ -42,14 +55,40 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @Post('google')
+  googleLogin(@Body() dto: GoogleLoginDto) {
+    return this.authService.loginWithGoogle(dto);
+  }
+
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.requestPasswordReset(dto);
+  }
+
+  @Post('verify-reset-otp')
+  verifyResetOtp(@Body() dto: VerifyResetOtpDto) {
+    return this.authService.verifyPasswordResetOtp(dto);
+  }
+
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@Req() req: AccessTokenRequest) {
     return this.authService.getMe(req.user.sub);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Patch('me')
+  updateMe(@Req() req: AccessTokenRequest, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(req.user.sub, dto);
+  }
+
   @UseGuards(RefreshTokenGuard)
-  @Post('refresh')
+  @Post(['refresh-token', 'refresh'])
   refresh(@Req() req: RefreshTokenRequest) {
     return this.authService.refresh(req.user.sub, req.user.refreshToken);
   }

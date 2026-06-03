@@ -5,6 +5,7 @@ import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateTeamDto } from './dto/update-team.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { LeaderboardsService } from '../leaderboards/leaderboards.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 @Injectable()
 export class TeamsService {
@@ -12,6 +13,7 @@ export class TeamsService {
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
     private readonly leaderboardsService: LeaderboardsService,
+    private readonly auditLogsService: AuditLogsService,
   ) {}
 
   private readonly teamDetailInclude = {
@@ -35,6 +37,42 @@ export class TeamsService {
     },
   } as const;
 
+  private async assertRosterIsEditable(teamId: string) {
+    const lockedRegistration =
+      await this.prisma.tournamentRegistration.findFirst({
+        where: {
+          teamId,
+          status: 'APPROVED',
+          tournament: {
+            status: {
+              in: [
+                'REGISTRATION_CLOSED',
+                'BRACKET_GENERATED',
+                'CHECK_IN_PHASE',
+                'ONGOING',
+                'FINALIZING',
+              ],
+            },
+          },
+        },
+        select: {
+          id: true,
+          tournament: {
+            select: {
+              name: true,
+              status: true,
+            },
+          },
+        },
+      });
+
+    if (lockedRegistration) {
+      throw new BadRequestException(
+        `Roster is locked for ${lockedRegistration.tournament.name} (${lockedRegistration.tournament.status})`,
+      );
+    }
+  }
+
   async createTeam(captainId: string, dto: CreateTeamDto) {
     const existing = await this.prisma.team.findUnique({
       where: { name: dto.name },
@@ -47,12 +85,15 @@ export class TeamsService {
     const team = await this.prisma.team.create({
       data: {
         name: dto.name,
+        game: dto.game,
+        region: dto.region,
         description: dto.description,
         logoUrl: dto.logoUrl,
         captainId,
         members: {
           create: {
             userId: captainId,
+            roleInTeam: 'CAPTAIN',
           },
         },
       },
@@ -67,6 +108,18 @@ export class TeamsService {
         members: true,
       },
     });
+
+    await this.auditLogsService.createLog(
+      captainId,
+      'CREATE_TEAM',
+      'TEAM',
+      team.id,
+      {
+        teamName: team.name,
+        game: dto.game,
+        region: dto.region,
+      },
+    );
 
     return {
       message: 'Create team successfully',
@@ -126,10 +179,12 @@ export class TeamsService {
 
     const nextName = dto.name?.trim();
     const hasName = nextName !== undefined;
+    const hasGame = dto.game !== undefined;
+    const hasRegion = dto.region !== undefined;
     const hasDescription = dto.description !== undefined;
     const hasLogo = dto.logoUrl !== undefined;
 
-    if (!hasName && !hasDescription && !hasLogo) {
+    if (!hasName && !hasGame && !hasRegion && !hasDescription && !hasLogo) {
       throw new BadRequestException('No team fields to update');
     }
 
@@ -151,6 +206,8 @@ export class TeamsService {
       where: { id: teamId },
       data: {
         ...(nextName ? { name: nextName } : {}),
+        ...(hasGame ? { game: dto.game?.trim() || null } : {}),
+        ...(hasRegion ? { region: dto.region?.trim() || null } : {}),
         ...(hasDescription
           ? { description: dto.description?.trim() || null }
           : {}),
@@ -158,6 +215,29 @@ export class TeamsService {
       },
       include: this.teamDetailInclude,
     });
+
+    await this.auditLogsService.createLog(
+      userId,
+      'UPDATE_TEAM',
+      'TEAM',
+      teamId,
+      {
+        oldValue: {
+          name: team.name,
+          game: team.game,
+          region: team.region,
+          description: team.description,
+          logoUrl: team.logoUrl,
+        },
+        newValue: {
+          name: updated.name,
+          game: updated.game,
+          region: updated.region,
+          description: updated.description,
+          logoUrl: updated.logoUrl,
+        },
+      },
+    );
 
     return {
       message: 'Update team successfully',
@@ -180,6 +260,8 @@ export class TeamsService {
     if (team.captainId !== captainId) {
       throw new BadRequestException('Only captain can remove team members');
     }
+
+    await this.assertRosterIsEditable(teamId);
 
     if (targetUserId === team.captainId) {
       throw new BadRequestException('Captain cannot be removed from team');
@@ -210,6 +292,16 @@ export class TeamsService {
       },
     });
 
+    await this.auditLogsService.createLog(
+      captainId,
+      'REMOVE_TEAM_MEMBER',
+      'TEAM',
+      teamId,
+      {
+        removedUserId: targetUserId,
+      },
+    );
+
     return {
       message: 'Remove member successfully',
     };
@@ -239,6 +331,8 @@ export class TeamsService {
     }
 
     const team = membership.team;
+
+    await this.assertRosterIsEditable(team.id);
 
     if (team.captainId === userId) {
       if (team.members.length > 1) {
@@ -306,6 +400,17 @@ export class TeamsService {
       },
     });
 
+    await this.auditLogsService.createLog(
+      userId,
+      'LEAVE_TEAM',
+      'TEAM',
+      team.id,
+      {
+        teamId: team.id,
+        userId,
+      },
+    );
+
     return {
       message: 'Leave team successfully',
       data: null,
@@ -325,8 +430,23 @@ export class TeamsService {
       throw new BadRequestException('Only captain can invite members');
     }
 
-    const invitee = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    await this.assertRosterIsEditable(teamId);
+
+    const identifier = (
+      dto.identifier ??
+      dto.email ??
+      dto.username ??
+      ''
+    ).trim();
+
+    if (!identifier) {
+      throw new BadRequestException('Invite email or username is required');
+    }
+
+    const invitee = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: identifier }, { username: identifier }],
+      },
     });
 
     if (!invitee) {
@@ -359,17 +479,25 @@ export class TeamsService {
       },
     });
 
-    if (existingInvite) {
-      throw new BadRequestException('Invite already exists for this user');
+    if (existingInvite?.status === 'PENDING') {
+      throw new BadRequestException('Invite already pending for this user');
     }
 
-    const invite = await this.prisma.teamInvite.create({
-      data: {
-        teamId,
-        inviterId,
-        inviteeId: invitee.id,
-      },
-    });
+    const invite = existingInvite
+      ? await this.prisma.teamInvite.update({
+          where: { id: existingInvite.id },
+          data: {
+            status: 'PENDING',
+            inviterId,
+          },
+        })
+      : await this.prisma.teamInvite.create({
+          data: {
+            teamId,
+            inviterId,
+            inviteeId: invitee.id,
+          },
+        });
     await this.notificationsService.createNotification({
       userId: invitee.id,
       title: 'Team invitation',
@@ -380,6 +508,17 @@ export class TeamsService {
         inviteId: invite.id,
       },
     });
+
+    await this.auditLogsService.createLog(
+      inviterId,
+      'INVITE_TEAM_MEMBER',
+      'TEAM_INVITE',
+      invite.id,
+      {
+        teamId,
+        inviteeId: invitee.id,
+      },
+    );
 
     return {
       message: 'Invite member successfully',
@@ -430,6 +569,8 @@ export class TeamsService {
       throw new BadRequestException('Invite is not pending');
     }
 
+    await this.assertRosterIsEditable(invite.teamId);
+
     const existingMember = await this.prisma.teamMember.findUnique({
       where: {
         teamId_userId: {
@@ -448,6 +589,7 @@ export class TeamsService {
         data: {
           teamId: invite.teamId,
           userId,
+          roleInTeam: 'MEMBER',
         },
       }),
       this.prisma.teamInvite.update({
@@ -455,6 +597,16 @@ export class TeamsService {
         data: { status: 'ACCEPTED' },
       }),
     ]);
+
+    await this.auditLogsService.createLog(
+      userId,
+      'ACCEPT_TEAM_INVITE',
+      'TEAM_INVITE',
+      inviteId,
+      {
+        teamId: invite.teamId,
+      },
+    );
 
     return {
       message: 'Accept invite successfully',
@@ -483,6 +635,16 @@ export class TeamsService {
       where: { id: inviteId },
       data: { status: 'REJECTED' },
     });
+
+    await this.auditLogsService.createLog(
+      userId,
+      'REJECT_TEAM_INVITE',
+      'TEAM_INVITE',
+      inviteId,
+      {
+        teamId: invite.teamId,
+      },
+    );
 
     return {
       message: 'Reject invite successfully',

@@ -24,6 +24,8 @@ export class EvidencesService {
         matchId,
         submittedBy: userId,
         imageUrl: dto.imageUrl,
+        fileUrl: dto.fileUrl ?? dto.imageUrl,
+        type: dto.type ?? 'SCREENSHOT',
         note: dto.note,
       },
     });

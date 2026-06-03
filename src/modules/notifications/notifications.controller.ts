@@ -9,7 +9,7 @@ import { NotificationsService } from './notifications.service';
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
-  @Get('me')
+  @Get(['', 'me'])
   getMyNotifications(@CurrentUser() user: JwtPayload) {
     return this.notificationsService.getMyNotifications(user.sub);
   }
