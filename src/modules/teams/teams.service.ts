@@ -216,22 +216,28 @@ export class TeamsService {
       include: this.teamDetailInclude,
     });
 
-    await this.auditLogsService.createLog(userId, 'UPDATE_TEAM', 'TEAM', teamId, {
-      oldValue: {
-        name: team.name,
-        game: team.game,
-        region: team.region,
-        description: team.description,
-        logoUrl: team.logoUrl,
+    await this.auditLogsService.createLog(
+      userId,
+      'UPDATE_TEAM',
+      'TEAM',
+      teamId,
+      {
+        oldValue: {
+          name: team.name,
+          game: team.game,
+          region: team.region,
+          description: team.description,
+          logoUrl: team.logoUrl,
+        },
+        newValue: {
+          name: updated.name,
+          game: updated.game,
+          region: updated.region,
+          description: updated.description,
+          logoUrl: updated.logoUrl,
+        },
       },
-      newValue: {
-        name: updated.name,
-        game: updated.game,
-        region: updated.region,
-        description: updated.description,
-        logoUrl: updated.logoUrl,
-      },
-    });
+    );
 
     return {
       message: 'Update team successfully',
@@ -394,10 +400,16 @@ export class TeamsService {
       },
     });
 
-    await this.auditLogsService.createLog(userId, 'LEAVE_TEAM', 'TEAM', team.id, {
-      teamId: team.id,
+    await this.auditLogsService.createLog(
       userId,
-    });
+      'LEAVE_TEAM',
+      'TEAM',
+      team.id,
+      {
+        teamId: team.id,
+        userId,
+      },
+    );
 
     return {
       message: 'Leave team successfully',
@@ -420,7 +432,12 @@ export class TeamsService {
 
     await this.assertRosterIsEditable(teamId);
 
-    const identifier = (dto.identifier ?? dto.email ?? dto.username ?? '').trim();
+    const identifier = (
+      dto.identifier ??
+      dto.email ??
+      dto.username ??
+      ''
+    ).trim();
 
     if (!identifier) {
       throw new BadRequestException('Invite email or username is required');
@@ -619,9 +636,15 @@ export class TeamsService {
       data: { status: 'REJECTED' },
     });
 
-    await this.auditLogsService.createLog(userId, 'REJECT_TEAM_INVITE', 'TEAM_INVITE', inviteId, {
-      teamId: invite.teamId,
-    });
+    await this.auditLogsService.createLog(
+      userId,
+      'REJECT_TEAM_INVITE',
+      'TEAM_INVITE',
+      inviteId,
+      {
+        teamId: invite.teamId,
+      },
+    );
 
     return {
       message: 'Reject invite successfully',

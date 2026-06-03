@@ -156,7 +156,13 @@ export class LandingService {
       where: {
         tournament: {
           status: {
-            in: ['BRACKET_GENERATED', 'CHECK_IN_PHASE', 'ONGOING', 'FINALIZING', 'COMPLETED'],
+            in: [
+              'BRACKET_GENERATED',
+              'CHECK_IN_PHASE',
+              'ONGOING',
+              'FINALIZING',
+              'COMPLETED',
+            ],
           },
         },
       },

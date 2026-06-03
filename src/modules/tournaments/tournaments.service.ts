@@ -398,7 +398,9 @@ export class TournamentsService {
     }
 
     if (['COMPLETED', 'ARCHIVED'].includes(tournament.status)) {
-      throw new BadRequestException('Completed or archived tournaments cannot be cancelled');
+      throw new BadRequestException(
+        'Completed or archived tournaments cannot be cancelled',
+      );
     }
 
     const updated = await this.prisma.tournament.update({
@@ -521,7 +523,9 @@ export class TournamentsService {
     }
 
     if (tournament.organizerId !== organizerId) {
-      throw new BadRequestException('Only organizer can update this tournament');
+      throw new BadRequestException(
+        'Only organizer can update this tournament',
+      );
     }
 
     if (
@@ -563,7 +567,9 @@ export class TournamentsService {
       ...(dto.livestreamUrl !== undefined
         ? { livestreamUrl: dto.livestreamUrl?.trim() || null }
         : {}),
-      ...(dto.startDate !== undefined ? { startDate: new Date(dto.startDate) } : {}),
+      ...(dto.startDate !== undefined
+        ? { startDate: new Date(dto.startDate) }
+        : {}),
       ...(dto.endDate !== undefined
         ? { endDate: dto.endDate ? new Date(dto.endDate) : null }
         : {}),
@@ -1207,7 +1213,10 @@ export class TournamentsService {
       }),
     );
 
-    const matchesByRound = new Map<number, { id: string; matchNumber: number }[]>();
+    const matchesByRound = new Map<
+      number,
+      { id: string; matchNumber: number }[]
+    >();
 
     for (let roundNumber = 1; roundNumber <= roundCount; roundNumber += 1) {
       const matchCount = bracketSize / 2 ** roundNumber;
@@ -1218,7 +1227,8 @@ export class TournamentsService {
         const slotIndex = (matchNumber - 1) * 2;
         const teamA = roundNumber === 1 ? seededSlots[slotIndex] : null;
         const teamB = roundNumber === 1 ? seededSlots[slotIndex + 1] : null;
-        const byeWinner = teamA && !teamB ? teamA : !teamA && teamB ? teamB : null;
+        const byeWinner =
+          teamA && !teamB ? teamA : !teamA && teamB ? teamB : null;
 
         const match = await this.prisma.match.create({
           data: {

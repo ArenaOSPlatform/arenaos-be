@@ -515,18 +515,17 @@ export class MatchesService implements OnModuleInit {
     }
 
     if (membership.team.captainId !== userId) {
-      const registration =
-        await this.prisma.tournamentRegistration.findUnique({
-          where: {
-            tournamentId_teamId: {
-              tournamentId: match.tournamentId,
-              teamId: membership.teamId,
-            },
+      const registration = await this.prisma.tournamentRegistration.findUnique({
+        where: {
+          tournamentId_teamId: {
+            tournamentId: match.tournamentId,
+            teamId: membership.teamId,
           },
-          select: {
-            lineupData: true,
-          },
-        });
+        },
+        select: {
+          lineupData: true,
+        },
+      });
 
       let lineupIds: string[] = [];
 
@@ -559,8 +558,7 @@ export class MatchesService implements OnModuleInit {
     }
 
     const checkedInAt = new Date();
-    const checkInOpensAt =
-      match.scheduledAt.getTime() - this.reminderLeadMs;
+    const checkInOpensAt = match.scheduledAt.getTime() - this.reminderLeadMs;
 
     if (checkedInAt.getTime() < checkInOpensAt) {
       throw new BadRequestException(

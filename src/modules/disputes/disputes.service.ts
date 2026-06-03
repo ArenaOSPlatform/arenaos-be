@@ -230,7 +230,9 @@ export class DisputesService {
     }
 
     if (dispute.status === 'RESOLVED') {
-      throw new BadRequestException('Resolved disputes cannot request evidence');
+      throw new BadRequestException(
+        'Resolved disputes cannot request evidence',
+      );
     }
 
     const updated = await this.prisma.dispute.update({

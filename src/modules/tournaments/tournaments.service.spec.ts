@@ -106,11 +106,15 @@ describe('TournamentsService announcements', () => {
     process.env.DISCORD_WEBHOOK_URL =
       'https://discord.com/api/webhooks/webhook-id/webhook-token';
 
-    const result = await service.createAnnouncement('tournament-1', 'organizer-1', {
-      title: 'Schedule update',
-      content: 'Grand final starts at 8 PM.',
-      type: 'INFO',
-    });
+    const result = await service.createAnnouncement(
+      'tournament-1',
+      'organizer-1',
+      {
+        title: 'Schedule update',
+        content: 'Grand final starts at 8 PM.',
+        type: 'INFO',
+      },
+    );
 
     expect(result.data.delivery).toEqual({
       inAppRecipients: 2,
@@ -123,7 +127,12 @@ describe('TournamentsService announcements', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [url, request] = fetchMock.mock.calls[0] as [URL, RequestInit];
-    const body = JSON.parse(String(request.body)) as {
+
+    if (typeof request.body !== 'string') {
+      throw new Error('Expected Discord webhook request body to be a string');
+    }
+
+    const body = JSON.parse(request.body) as {
       username: string;
       content: string;
       allowed_mentions: { parse: string[] };

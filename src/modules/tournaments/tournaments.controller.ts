@@ -67,10 +67,7 @@ export class TournamentsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post(':id/approve')
-  approveTournament(
-    @Param('id') id: string,
-    @CurrentUser() user: JwtPayload,
-  ) {
+  approveTournament(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.tournamentsService.approveTournament(id, user.sub);
   }
 
@@ -87,19 +84,13 @@ export class TournamentsController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/cancel')
-  cancelTournament(
-    @Param('id') id: string,
-    @CurrentUser() user: JwtPayload,
-  ) {
+  cancelTournament(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.tournamentsService.cancelTournament(id, user.sub, user.role);
   }
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/archive')
-  archiveTournament(
-    @Param('id') id: string,
-    @CurrentUser() user: JwtPayload,
-  ) {
+  archiveTournament(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.tournamentsService.archiveTournament(id, user.sub, user.role);
   }
 
