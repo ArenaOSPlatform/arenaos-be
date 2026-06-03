@@ -5,7 +5,53 @@ const publicTournamentStatuses = [
   'OPEN_REGISTRATION',
   'REGISTRATION_CLOSED',
   'BRACKET_GENERATED',
+  'CHECK_IN_PHASE',
+  'ONGOING',
+  'FINALIZING',
   'COMPLETED',
+];
+
+const platformFeatures = [
+  {
+    id: 'realtime-bracket',
+    title: 'Realtime Bracket',
+    description:
+      'Brackets update automatically when match results are confirmed.',
+    icon: 'GitBranch',
+  },
+  {
+    id: 'live-match-room',
+    title: 'Live Match Room',
+    description: 'Dedicated match rooms for check-in, scores and evidence.',
+    icon: 'Radio',
+  },
+  {
+    id: 'dispute-center',
+    title: 'Dispute Center',
+    description: 'Resolve result disputes with evidence-backed workflows.',
+    icon: 'FileSearch',
+  },
+  {
+    id: 'audit-log',
+    title: 'Audit Log',
+    description:
+      'Track important system actions across the tournament lifecycle.',
+    icon: 'Activity',
+  },
+  {
+    id: 'rbac-permission',
+    title: 'RBAC Permission',
+    description:
+      'Separate access for players, captains, organizers and admins.',
+    icon: 'LockKeyhole',
+  },
+  {
+    id: 'analytics-dashboard',
+    title: 'Analytics Dashboard',
+    description:
+      'Monitor tournament, team, match and user metrics in realtime.',
+    icon: 'BarChart3',
+  },
 ];
 
 @Injectable()
@@ -25,6 +71,7 @@ export class LandingService {
         tournaments,
         topTeams,
         bracket,
+        features: platformFeatures,
       },
     };
   }
@@ -109,7 +156,7 @@ export class LandingService {
       where: {
         tournament: {
           status: {
-            in: ['BRACKET_GENERATED', 'COMPLETED'],
+            in: ['BRACKET_GENERATED', 'CHECK_IN_PHASE', 'ONGOING', 'FINALIZING', 'COMPLETED'],
           },
         },
       },

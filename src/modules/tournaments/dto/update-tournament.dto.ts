@@ -1,20 +1,19 @@
 import {
   IsDateString,
   IsInt,
-  IsNotEmpty,
   IsOptional,
   IsString,
   Min,
 } from 'class-validator';
 
-export class CreateTournamentDto {
-  @IsNotEmpty()
+export class UpdateTournamentDto {
+  @IsOptional()
   @IsString()
-  name!: string;
+  name?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  game!: string;
+  game?: string;
 
   @IsOptional()
   @IsString()
@@ -24,17 +23,19 @@ export class CreateTournamentDto {
   @IsString()
   bannerUrl?: string;
 
+  @IsOptional()
   @IsInt()
   @Min(2)
-  maxTeams!: number;
+  maxTeams?: number;
 
+  @IsOptional()
   @IsInt()
   @Min(1)
-  teamSize!: number;
+  teamSize?: number;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  format!: string;
+  format?: string;
 
   @IsOptional()
   @IsString()
@@ -52,13 +53,15 @@ export class CreateTournamentDto {
   @IsString()
   livestreamUrl?: string;
 
+  @IsOptional()
   @IsDateString()
-  startDate!: string;
+  startDate?: string;
 
   @IsOptional()
   @IsDateString()
   endDate?: string;
 
+  @IsOptional()
   @IsDateString()
-  registrationDeadline!: string;
+  registrationDeadline?: string;
 }

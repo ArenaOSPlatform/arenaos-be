@@ -4,7 +4,9 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UserRole } from '../auth/constants/user-role';
 import { LeaderboardsService } from '../leaderboards/leaderboards.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeGateway } from '../realtime/realtime/realtime.gateway';
 import { TournamentCompletionService } from '../tournament-completion.service';
+import { validateBestOfScore } from '../matches/match-score.util';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 
@@ -16,6 +18,7 @@ export class DisputesService {
     private readonly notificationsService: NotificationsService,
     private readonly leaderboardsService: LeaderboardsService,
     private readonly tournamentCompletionService: TournamentCompletionService,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
   private async notifyTeamMembers(
@@ -82,19 +85,68 @@ export class DisputesService {
       throw new BadRequestException('Tournament is completed and archived');
     }
 
+    const membership = await this.prisma.teamMember.findFirst({
+      where: {
+        userId,
+        teamId: {
+          in: [match.teamAId, match.teamBId].filter(Boolean) as string[],
+        },
+      },
+      select: { teamId: true },
+    });
+
+    const evidenceUrl = dto.fileUrl ?? dto.imageUrl;
+
+    if (evidenceUrl) {
+      await this.prisma.matchEvidence.create({
+        data: {
+          matchId,
+          submittedBy: userId,
+          imageUrl: evidenceUrl,
+          fileUrl: evidenceUrl,
+          type: dto.type ?? 'SCREENSHOT',
+          note: 'Dispute evidence',
+        },
+      });
+    }
+
     const dispute = await this.prisma.dispute.create({
       data: {
         matchId,
         createdBy: userId,
+        teamId: membership?.teamId ?? null,
         reason: dto.reason,
         description: dto.description,
       },
     });
 
-    await this.prisma.match.update({
+    const updatedMatch = await this.prisma.match.update({
       where: { id: matchId },
       data: { status: 'DISPUTED' },
     });
+
+    await this.auditLogsService.createLog(
+      userId,
+      'CREATE_DISPUTE',
+      'DISPUTE',
+      dispute.id,
+      {
+        matchId,
+        tournamentId: match.tournamentId,
+        teamId: membership?.teamId ?? null,
+      },
+    );
+
+    this.realtimeGateway.emitMatchEvent(
+      matchId,
+      'match:disputed',
+      updatedMatch,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updatedMatch,
+    );
 
     return {
       message: 'Create dispute successfully',
@@ -120,6 +172,107 @@ export class DisputesService {
     return {
       message: 'Get disputes successfully',
       data: disputes,
+    };
+  }
+
+  async getDispute(disputeId: string) {
+    const dispute = await this.prisma.dispute.findUnique({
+      where: { id: disputeId },
+      include: {
+        match: {
+          include: {
+            evidences: true,
+            tournament: true,
+          },
+        },
+      },
+    });
+
+    if (!dispute) {
+      throw new BadRequestException('Dispute not found');
+    }
+
+    return {
+      message: 'Get dispute successfully',
+      data: dispute,
+    };
+  }
+
+  async requestEvidence(
+    disputeId: string,
+    userId: string,
+    userRole: UserRole,
+    message?: string,
+  ) {
+    const dispute = await this.prisma.dispute.findUnique({
+      where: { id: disputeId },
+      include: {
+        match: {
+          include: {
+            tournament: true,
+          },
+        },
+      },
+    });
+
+    if (!dispute) {
+      throw new BadRequestException('Dispute not found');
+    }
+
+    const canRequest =
+      userRole === UserRole.ADMIN ||
+      dispute.match.tournament.organizerId === userId;
+
+    if (!canRequest) {
+      throw new BadRequestException(
+        'Only organizer or admin can request evidence',
+      );
+    }
+
+    if (dispute.status === 'RESOLVED') {
+      throw new BadRequestException('Resolved disputes cannot request evidence');
+    }
+
+    const updated = await this.prisma.dispute.update({
+      where: { id: disputeId },
+      data: {
+        status: 'EVIDENCE_REQUESTED',
+        decision: message ?? 'More evidence requested',
+      },
+    });
+
+    const teamIds = [dispute.match.teamAId, dispute.match.teamBId].filter(
+      Boolean,
+    ) as string[];
+
+    await this.notifyTeamMembers(teamIds, {
+      title: 'More dispute evidence requested',
+      message:
+        message ??
+        `${dispute.match.tournament.name} dispute needs more evidence.`,
+      type: 'DISPUTE_EVIDENCE_REQUESTED',
+      metadata: {
+        disputeId,
+        matchId: dispute.matchId,
+        tournamentId: dispute.match.tournamentId,
+      },
+    });
+
+    await this.auditLogsService.createLog(
+      userId,
+      'REQUEST_DISPUTE_EVIDENCE',
+      'DISPUTE',
+      disputeId,
+      {
+        matchId: dispute.matchId,
+        tournamentId: dispute.match.tournamentId,
+        message,
+      },
+    );
+
+    return {
+      message: 'Request evidence successfully',
+      data: updated,
     };
   }
 
@@ -169,11 +322,16 @@ export class DisputesService {
       throw new BadRequestException('Match does not have enough teams');
     }
 
-    if (
-      dto.decision !== 'REMATCH' &&
-      (match.pendingScoreA === null || match.pendingScoreB === null)
-    ) {
-      throw new BadRequestException('Pending result is incomplete');
+    if (dto.decision !== 'REMATCH') {
+      if (match.pendingScoreA === null || match.pendingScoreB === null) {
+        throw new BadRequestException('Pending result is incomplete');
+      }
+
+      validateBestOfScore(
+        match.bestOf,
+        match.pendingScoreA,
+        match.pendingScoreB,
+      );
     }
 
     const resolved = await this.prisma.dispute.update({
@@ -277,6 +435,29 @@ export class DisputesService {
         winnerId,
       },
     });
+
+    this.realtimeGateway.emitMatchEvent(
+      dispute.matchId,
+      dto.decision === 'REMATCH' ? 'match:disputed' : 'match:completed',
+      {
+        disputeId,
+        matchId: dispute.matchId,
+        status: updatedMatchStatus,
+        decision: dto.decision,
+        winnerId,
+      },
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      {
+        disputeId,
+        matchId: dispute.matchId,
+        status: updatedMatchStatus,
+        decision: dto.decision,
+        winnerId,
+      },
+    );
 
     return {
       message: 'Resolve dispute successfully',

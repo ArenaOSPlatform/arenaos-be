@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { isUserRole } from '../auth/constants/user-role';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeGateway } from '../realtime/realtime/realtime.gateway';
 import { RejectApprovalDto } from './dto/reject-approval.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
@@ -31,6 +32,7 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly auditLogsService: AuditLogsService,
     private readonly notificationsService: NotificationsService,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
   async getUsers() {
@@ -388,6 +390,12 @@ export class AdminService {
       metadata: { tournamentId },
     });
 
+    this.realtimeGateway.emitTournamentEvent(
+      tournamentId,
+      'tournament:status_changed',
+      updatedTournament,
+    );
+
     return {
       message: 'Approve tournament successfully',
       data: updatedTournament,
@@ -458,6 +466,12 @@ export class AdminService {
       type: 'TOURNAMENT_REJECTED',
       metadata: { tournamentId },
     });
+
+    this.realtimeGateway.emitTournamentEvent(
+      tournamentId,
+      'tournament:status_changed',
+      updatedTournament,
+    );
 
     return {
       message: 'Reject tournament successfully',
@@ -577,6 +591,59 @@ export class AdminService {
     return {
       message: 'Update user status successfully',
       data: updatedUser,
+    };
+  }
+
+  banUser(userId: string, adminId: string) {
+    return this.updateUserStatus(userId, adminId, { status: 'BANNED' });
+  }
+
+  unbanUser(userId: string, adminId: string) {
+    return this.updateUserStatus(userId, adminId, { status: 'ACTIVE' });
+  }
+
+  async getAnalytics() {
+    const [
+      totalUsers,
+      activeUsers,
+      bannedUsers,
+      totalTeams,
+      totalTournaments,
+      openTournaments,
+      ongoingTournaments,
+      completedTournaments,
+      openDisputes,
+      pendingOrganizerRequests,
+      pendingTournamentApprovals,
+    ] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.user.count({ where: { status: 'ACTIVE' } }),
+      this.prisma.user.count({ where: { status: 'BANNED' } }),
+      this.prisma.team.count(),
+      this.prisma.tournament.count(),
+      this.prisma.tournament.count({ where: { status: 'OPEN_REGISTRATION' } }),
+      this.prisma.tournament.count({ where: { status: 'ONGOING' } }),
+      this.prisma.tournament.count({ where: { status: 'COMPLETED' } }),
+      this.prisma.dispute.count({ where: { status: 'OPEN' } }),
+      this.prisma.organizerRequest.count({ where: { status: 'PENDING' } }),
+      this.prisma.tournament.count({ where: { status: 'PENDING_APPROVAL' } }),
+    ]);
+
+    return {
+      message: 'Get admin analytics successfully',
+      data: {
+        totalUsers,
+        activeUsers,
+        bannedUsers,
+        totalTeams,
+        totalTournaments,
+        openTournaments,
+        ongoingTournaments,
+        completedTournaments,
+        openDisputes,
+        pendingOrganizerRequests,
+        pendingTournamentApprovals,
+      },
     };
   }
 }

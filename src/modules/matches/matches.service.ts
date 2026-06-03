@@ -3,12 +3,14 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LeaderboardsService } from '../leaderboards/leaderboards.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeGateway } from '../realtime/realtime/realtime.gateway';
 import { TournamentCompletionService } from '../tournament-completion.service';
 import { DisputeMatchResultDto } from './dto/dispute-match-result.dto';
 import { ScheduleMatchDto } from './dto/schedule-match.dto';
 import { SubmitMatchResultDto } from './dto/submit-match-result.dto';
 import { UpdateLivestreamDto } from './dto/update-livestream.dto';
 import { UpdateMatchResultDto } from './dto/update-match-result.dto';
+import { normalizeBestOf, validateBestOfScore } from './match-score.util';
 
 type MatchTeamSlot = 'A' | 'B';
 
@@ -31,6 +33,7 @@ export class MatchesService implements OnModuleInit {
     private readonly notificationsService: NotificationsService,
     private readonly leaderboardsService: LeaderboardsService,
     private readonly tournamentCompletionService: TournamentCompletionService,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
   async onModuleInit() {
@@ -249,6 +252,8 @@ export class MatchesService implements OnModuleInit {
     const scheduledAt = new Date(dto.scheduledAt);
     const roomCode = dto.roomCode.trim();
     const livestreamUrl = dto.livestreamUrl?.trim() || null;
+    const bestOf = dto.bestOf?.trim() ? normalizeBestOf(dto.bestOf) : null;
+    const note = dto.note?.trim() || null;
 
     if (Number.isNaN(scheduledAt.getTime())) {
       throw new BadRequestException('Invalid scheduled time');
@@ -304,11 +309,15 @@ export class MatchesService implements OnModuleInit {
         scheduledAt,
         roomCode,
         livestreamUrl,
+        bestOf,
+        note,
         status: nextStatus,
       },
       include: {
         tournament: true,
         bracket: true,
+        evidences: true,
+        checkIns: true,
       },
     });
 
@@ -323,6 +332,8 @@ export class MatchesService implements OnModuleInit {
         scheduledAt,
         roomCode,
         livestreamUrl,
+        bestOf,
+        note,
         teamAId: match.teamAId,
         teamBId: match.teamBId,
       },
@@ -342,6 +353,13 @@ export class MatchesService implements OnModuleInit {
     });
 
     this.scheduleReminder(matchId, scheduledAt);
+
+    this.realtimeGateway.emitMatchEvent(matchId, 'match:scheduled', updated);
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updated,
+    );
 
     return {
       message: 'Match scheduled successfully',
@@ -407,6 +425,8 @@ export class MatchesService implements OnModuleInit {
       include: {
         tournament: true,
         bracket: true,
+        evidences: true,
+        checkIns: true,
       },
     });
 
@@ -495,10 +515,58 @@ export class MatchesService implements OnModuleInit {
     }
 
     if (membership.team.captainId !== userId) {
-      throw new BadRequestException('Only team captain can check in');
+      const registration =
+        await this.prisma.tournamentRegistration.findUnique({
+          where: {
+            tournamentId_teamId: {
+              tournamentId: match.tournamentId,
+              teamId: membership.teamId,
+            },
+          },
+          select: {
+            lineupData: true,
+          },
+        });
+
+      let lineupIds: string[] = [];
+
+      if (registration?.lineupData) {
+        try {
+          const lineup = JSON.parse(registration.lineupData) as {
+            mainPlayerIds?: string[];
+            memberIds?: string[];
+            substituteIds?: string[];
+          };
+
+          lineupIds = [
+            ...(lineup.mainPlayerIds ?? lineup.memberIds ?? []),
+            ...(lineup.substituteIds ?? []),
+          ];
+        } catch {
+          lineupIds = [];
+        }
+      }
+
+      if (!lineupIds.includes(userId)) {
+        throw new BadRequestException(
+          'Only captain or registered lineup players can check in',
+        );
+      }
+    }
+
+    if (!match.scheduledAt) {
+      throw new BadRequestException('Match must be scheduled before check-in');
     }
 
     const checkedInAt = new Date();
+    const checkInOpensAt =
+      match.scheduledAt.getTime() - this.reminderLeadMs;
+
+    if (checkedInAt.getTime() < checkInOpensAt) {
+      throw new BadRequestException(
+        'Check-in opens 15 minutes before scheduled match time',
+      );
+    }
 
     if (membership.teamId === match.teamAId) {
       if (match.teamACheckedInAt) {
@@ -519,6 +587,43 @@ export class MatchesService implements OnModuleInit {
           bracket: true,
         },
       });
+
+      await this.prisma.matchCheckIn.upsert({
+        where: {
+          matchId_teamId: {
+            matchId,
+            teamId: membership.teamId,
+          },
+        },
+        update: {
+          checkedInBy: userId,
+          checkedInAt,
+        },
+        create: {
+          matchId,
+          teamId: membership.teamId,
+          checkedInBy: userId,
+          checkedInAt,
+        },
+      });
+
+      if (match.tournament.status === 'BRACKET_GENERATED') {
+        await this.prisma.tournament.update({
+          where: { id: match.tournamentId },
+          data: { status: 'CHECK_IN_PHASE' },
+        });
+      }
+
+      this.realtimeGateway.emitMatchEvent(
+        matchId,
+        'match:checkin_updated',
+        updated,
+      );
+      this.realtimeGateway.emitTournamentEvent(
+        match.tournamentId,
+        'tournament:status_changed',
+        { tournamentId: match.tournamentId, status: 'CHECK_IN_PHASE' },
+      );
 
       return {
         message:
@@ -547,6 +652,43 @@ export class MatchesService implements OnModuleInit {
         bracket: true,
       },
     });
+
+    await this.prisma.matchCheckIn.upsert({
+      where: {
+        matchId_teamId: {
+          matchId,
+          teamId: membership.teamId,
+        },
+      },
+      update: {
+        checkedInBy: userId,
+        checkedInAt,
+      },
+      create: {
+        matchId,
+        teamId: membership.teamId,
+        checkedInBy: userId,
+        checkedInAt,
+      },
+    });
+
+    if (match.tournament.status === 'BRACKET_GENERATED') {
+      await this.prisma.tournament.update({
+        where: { id: match.tournamentId },
+        data: { status: 'CHECK_IN_PHASE' },
+      });
+    }
+
+    this.realtimeGateway.emitMatchEvent(
+      matchId,
+      'match:checkin_updated',
+      updated,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'tournament:status_changed',
+      { tournamentId: match.tournamentId, status: 'CHECK_IN_PHASE' },
+    );
 
     return {
       message:
@@ -610,6 +752,16 @@ export class MatchesService implements OnModuleInit {
       },
     });
 
+    if (
+      match.tournament.status === 'BRACKET_GENERATED' ||
+      match.tournament.status === 'CHECK_IN_PHASE'
+    ) {
+      await this.prisma.tournament.update({
+        where: { id: match.tournamentId },
+        data: { status: 'ONGOING' },
+      });
+    }
+
     await this.auditLogsService.createLog(
       organizerId,
       'START_MATCH',
@@ -653,6 +805,13 @@ export class MatchesService implements OnModuleInit {
       ),
     );
 
+    this.realtimeGateway.emitMatchEvent(matchId, 'match:live', updated);
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'tournament:status_changed',
+      { tournamentId: match.tournamentId, status: 'ONGOING' },
+    );
+
     return {
       message: 'Match started successfully',
       data: updated,
@@ -689,9 +848,7 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Match does not have enough teams');
     }
 
-    if (dto.scoreA === dto.scoreB) {
-      throw new BadRequestException('Draw result is not allowed');
-    }
+    validateBestOfScore(match.bestOf, dto.scoreA, dto.scoreB);
 
     const membership = await this.getCaptainMembership(match, userId);
     const opposingTeamId =
@@ -702,6 +859,8 @@ export class MatchesService implements OnModuleInit {
         matchId,
         submittedBy: userId,
         imageUrl: dto.imageUrl,
+        fileUrl: dto.fileUrl ?? dto.imageUrl,
+        type: dto.type ?? 'SCREENSHOT',
         note: dto.note,
       },
     });
@@ -738,6 +897,19 @@ export class MatchesService implements OnModuleInit {
       },
     );
 
+    if (!match.nextMatchId) {
+      await this.prisma.tournament.update({
+        where: { id: match.tournamentId },
+        data: { status: 'FINALIZING' },
+      });
+
+      this.realtimeGateway.emitTournamentEvent(
+        match.tournamentId,
+        'tournament:status_changed',
+        { tournamentId: match.tournamentId, status: 'FINALIZING' },
+      );
+    }
+
     await this.notifyTeamMembers([opposingTeamId], {
       title: 'Match result needs confirmation',
       message: `${match.tournament.name} result was submitted. Please confirm or dispute.`,
@@ -748,6 +920,17 @@ export class MatchesService implements OnModuleInit {
         submittedTeamId: membership.teamId,
       },
     });
+
+    this.realtimeGateway.emitMatchEvent(
+      matchId,
+      'match:score_submitted',
+      updated,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updated,
+    );
 
     return {
       message: 'Match result submitted for confirmation',
@@ -850,6 +1033,18 @@ export class MatchesService implements OnModuleInit {
       },
     });
 
+    this.realtimeGateway.emitMatchEvent(matchId, 'match:completed', updated);
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updated,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'leaderboard:updated',
+      { tournamentId: match.tournamentId, matchId },
+    );
+
     return {
       message: 'Match result confirmed successfully',
       data: updated,
@@ -898,6 +1093,8 @@ export class MatchesService implements OnModuleInit {
           matchId,
           submittedBy: userId,
           imageUrl: dto.imageUrl,
+          fileUrl: dto.fileUrl ?? dto.imageUrl,
+          type: dto.type ?? 'SCREENSHOT',
           note: dto.note ?? 'Dispute evidence',
         },
       });
@@ -907,6 +1104,7 @@ export class MatchesService implements OnModuleInit {
       data: {
         matchId,
         createdBy: userId,
+        teamId: membership.teamId,
         reason: dto.reason,
         description: dto.description,
       },
@@ -949,6 +1147,13 @@ export class MatchesService implements OnModuleInit {
       },
     });
 
+    this.realtimeGateway.emitMatchEvent(matchId, 'match:disputed', updated);
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updated,
+    );
+
     return {
       message: 'Match result disputed successfully',
       data: updated,
@@ -983,15 +1188,17 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Match teams are not ready');
     }
 
-    if (match.status !== 'IN_PROGRESS') {
+    if (
+      !['IN_PROGRESS', 'PENDING_CONFIRMATION', 'DISPUTED'].includes(
+        match.status,
+      )
+    ) {
       throw new BadRequestException(
         'Match must be in progress before submitting result',
       );
     }
 
-    if (dto.scoreA === dto.scoreB) {
-      throw new BadRequestException('Draw result is not allowed');
-    }
+    validateBestOfScore(match.bestOf, dto.scoreA, dto.scoreB);
 
     const winnerId = dto.scoreA > dto.scoreB ? match.teamAId : match.teamBId;
 
@@ -1001,6 +1208,7 @@ export class MatchesService implements OnModuleInit {
         scoreA: dto.scoreA,
         scoreB: dto.scoreB,
         winnerId,
+        resultStatus: 'ORGANIZER_CONFIRMED',
         status: 'COMPLETED',
       },
     });
@@ -1026,6 +1234,31 @@ export class MatchesService implements OnModuleInit {
       'UPDATE_MATCH_RESULT',
     );
 
+    await this.auditLogsService.createLog(
+      organizerId,
+      'UPDATE_MATCH_RESULT',
+      'MATCH',
+      matchId,
+      {
+        tournamentId: match.tournamentId,
+        winnerId,
+        scoreA: dto.scoreA,
+        scoreB: dto.scoreB,
+      },
+    );
+
+    this.realtimeGateway.emitMatchEvent(matchId, 'match:completed', updated);
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'bracket:updated',
+      updated,
+    );
+    this.realtimeGateway.emitTournamentEvent(
+      match.tournamentId,
+      'leaderboard:updated',
+      { tournamentId: match.tournamentId, matchId },
+    );
+
     return {
       message: 'Update match result successfully',
       data: updated,
@@ -1038,6 +1271,8 @@ export class MatchesService implements OnModuleInit {
       include: {
         tournament: true,
         bracket: true,
+        evidences: true,
+        checkIns: true,
       },
     });
 

@@ -15,5 +15,13 @@ export class DisputeMatchResultDto {
 
   @IsOptional()
   @IsString()
+  fileUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @IsOptional()
+  @IsString()
   note?: string;
 }

@@ -1,6 +1,15 @@
-import { IsEmail } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 
 export class InviteMemberDto {
-  @IsEmail()
-  email!: string;
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  username?: string;
+
+  @IsOptional()
+  @IsString()
+  identifier?: string;
 }

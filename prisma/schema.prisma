@@ -18,20 +18,39 @@ model User {
   email            String  @unique
   passwordHash     String
   refreshTokenHash String?
+  provider         String  @default("LOCAL")
+  googleId         String? @unique
   /// UserRole values: PLAYER, ORGANIZER, ADMIN
   role             String  @default("PLAYER")
   avatarUrl        String?
   status           String  @default("ACTIVE")
 
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
-  captainTeams    Team[]
-  teamMembers     TeamMember[]
-  sentInvites     TeamInvite[] @relation("InviteSender")
-  receivedInvites TeamInvite[] @relation("InviteReceiver")
-  tournaments     Tournament[]
-  organizerRequests OrganizerRequest[] @relation("OrganizerRequestUser")
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+  captainTeams              Team[]
+  teamMembers               TeamMember[]
+  sentInvites               TeamInvite[]       @relation("InviteSender")
+  receivedInvites           TeamInvite[]       @relation("InviteReceiver")
+  tournaments               Tournament[]
+  organizerRequests         OrganizerRequest[] @relation("OrganizerRequestUser")
   reviewedOrganizerRequests OrganizerRequest[] @relation("OrganizerRequestReviewer")
+  passwordResetOtps         PasswordResetOtp[]
+}
+
+model PasswordResetOtp {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  otpHash    String
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model OrganizerRequest {
@@ -40,14 +59,18 @@ model OrganizerRequest {
   userId String
   user   User   @relation("OrganizerRequestUser", fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  reason      String?
-  experience  String?
-  portfolioUrl String?
+  organizationName String?
+  contactEmail     String?
+  socialLink       String?
+  evidenceUrl      String?
+  reason           String?
+  experience       String?
+  portfolioUrl     String?
 
   status String @default("PENDING")
 
   reviewedBy String?
-  reviewer   User?   @relation("OrganizerRequestReviewer", fields: [reviewedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewer   User?     @relation("OrganizerRequestReviewer", fields: [reviewedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
   reviewNote String?
   reviewedAt DateTime?
 
@@ -59,24 +82,27 @@ model Team {
   id          String  @id @default(cuid())
   name        String  @unique
   logoUrl     String?
+  game        String?
+  region      String?
   description String?
+  status      String  @default("ACTIVE")
 
   captainId String
   captain   User   @relation(fields: [captainId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   members TeamMember[]
 
-  createdAt     DateTime                 @default(now())
-  updatedAt     DateTime                 @updatedAt
-  invites       TeamInvite[]
-  registrations TournamentRegistration[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  invites            TeamInvite[]
+  registrations      TournamentRegistration[]
   leaderboardEntries TournamentLeaderboard[]
-  rankingHistories TeamRankingHistory[]
-  totalMatchesPlayed Int @default(0)
-  totalWins          Int @default(0)
-  totalLosses        Int @default(0)
-  championCount      Int @default(0)
-  overallWinRate     Float @default(0)
+  rankingHistories   TeamRankingHistory[]
+  totalMatchesPlayed Int                      @default(0)
+  totalWins          Int                      @default(0)
+  totalLosses        Int                      @default(0)
+  championCount      Int                      @default(0)
+  overallWinRate     Float                    @default(0)
 }
 
 model TeamMember {
@@ -88,6 +114,7 @@ model TeamMember {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  roleInTeam String @default("MEMBER")
   joinedAt DateTime @default(now())
 
   @@unique([teamId, userId])
@@ -126,15 +153,17 @@ model Tournament {
 
   prizePool String?
   rules     String?
+  region    String?
+  livestreamUrl String?
 
-  status String @default("DRAFT")
-  approvalSubmittedAt DateTime?
-  approvalReviewedAt  DateTime?
-  approvalReviewedBy  String?
+  status               String    @default("DRAFT")
+  approvalSubmittedAt  DateTime?
+  approvalReviewedAt   DateTime?
+  approvalReviewedBy   String?
   approvalRejectReason String?
-  championTeamId String?
-  runnerUpTeamId String?
-  completedAt DateTime?
+  championTeamId       String?
+  runnerUpTeamId       String?
+  completedAt          DateTime?
 
   startDate            DateTime
   endDate              DateTime?
@@ -143,14 +172,14 @@ model Tournament {
   organizerId String
   organizer   User   @relation(fields: [organizerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  createdAt     DateTime                 @default(now())
-  updatedAt     DateTime                 @updatedAt
-  registrations TournamentRegistration[]
-  bracket       Bracket?
-  matches       Match[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  registrations      TournamentRegistration[]
+  bracket            Bracket?
+  matches            Match[]
   leaderboardEntries TournamentLeaderboard[]
-  rankingHistories TeamRankingHistory[]
-  announcements TournamentAnnouncement[]
+  rankingHistories   TeamRankingHistory[]
+  announcements      TournamentAnnouncement[]
 }
 
 model TournamentRegistration {
@@ -179,12 +208,31 @@ model Bracket {
   tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   format String
-  status String @default("GENERATED")
+  status String @default("LOCKED")
+  generatedAt DateTime @default(now())
+
+  rounds  BracketRound[]
+  matches Match[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BracketRound {
+  id String @id @default(cuid())
+
+  bracketId String
+  bracket   Bracket @relation(fields: [bracketId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  roundNumber Int
+  name        String
 
   matches Match[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([bracketId, roundNumber])
 }
 
 model Match {
@@ -196,6 +244,9 @@ model Match {
   bracketId String
   bracket   Bracket @relation(fields: [bracketId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  roundId String?
+  round   BracketRound? @relation(fields: [roundId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
   roundNumber Int
   matchNumber Int
 
@@ -204,15 +255,15 @@ model Match {
 
   winnerId String?
 
-  scoreA Int @default(0)
-  scoreB Int @default(0)
-  pendingScoreA Int?
-  pendingScoreB Int?
-  resultStatus String?
-  resultSubmittedBy String?
+  scoreA                Int       @default(0)
+  scoreB                Int       @default(0)
+  pendingScoreA         Int?
+  pendingScoreB         Int?
+  resultStatus          String?
+  resultSubmittedBy     String?
   resultSubmittedTeamId String?
-  resultSubmittedAt DateTime?
-  resultEvidenceId String?
+  resultSubmittedAt     DateTime?
+  resultEvidenceId      String?
 
   status String @default("PENDING")
 
@@ -224,14 +275,30 @@ model Match {
   scheduledAt   DateTime?
   livestreamUrl String?
   roomCode      String?
+  bestOf        String?
+  note          String?
 
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
   evidences MatchEvidence[]
   disputes  Dispute[]
+  checkIns  MatchCheckIn[]
 
   nextMatchId String?
   nextSlot    String?
+}
+
+model MatchCheckIn {
+  id String @id @default(cuid())
+
+  matchId String
+  match   Match @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  teamId      String
+  checkedInBy String
+  checkedInAt DateTime @default(now())
+
+  @@unique([matchId, teamId])
 }
 
 model MatchEvidence {
@@ -243,6 +310,8 @@ model MatchEvidence {
   submittedBy String
 
   imageUrl String
+  fileUrl  String?
+  type     String @default("SCREENSHOT")
   note     String?
 
   createdAt DateTime @default(now())
@@ -255,6 +324,7 @@ model Dispute {
   match   Match  @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   createdBy String
+  teamId    String?
 
   reason      String
   description String?
@@ -336,14 +406,19 @@ model AuditLog {
   id String @id @default(cuid())
 
   userId String?
+  actorId String?
 
   action String
 
   entityType String
+  targetType String?
 
   entityId String
+  targetId String?
 
   metadata String?
+  oldValue String?
+  newValue String?
 
   createdAt DateTime @default(now())
 }
@@ -360,5 +435,5 @@ model Notification {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  metadata String?
+  metadata  String?
 }

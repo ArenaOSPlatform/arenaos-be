@@ -25,6 +25,26 @@ export class DisputesController {
     return this.disputesService.getDisputes();
   }
 
+  @Get('disputes/:id')
+  getDispute(@Param('id') id: string) {
+    return this.disputesService.getDispute(id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('disputes/:id/request-evidence')
+  requestEvidence(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body('message') message?: string,
+  ) {
+    return this.disputesService.requestEvidence(
+      id,
+      user.sub,
+      user.role,
+      message,
+    );
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('disputes/:id/resolve')
   resolveDispute(

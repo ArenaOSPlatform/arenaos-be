@@ -52,6 +52,10 @@ export class OrganizerRequestsService {
     const request = await this.prisma.organizerRequest.create({
       data: {
         userId,
+        organizationName: dto.organizationName,
+        contactEmail: dto.contactEmail,
+        socialLink: dto.socialLink,
+        evidenceUrl: dto.evidenceUrl,
         reason: dto.reason,
         experience: dto.experience,
         portfolioUrl: dto.portfolioUrl,
@@ -76,6 +80,8 @@ export class OrganizerRequestsService {
       request.id,
       {
         username: user.username,
+        organizationName: dto.organizationName,
+        contactEmail: dto.contactEmail,
       },
     );
 

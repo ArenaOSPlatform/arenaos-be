@@ -18,4 +18,12 @@ export class ScheduleMatchDto {
   @IsString()
   @IsUrl({ require_protocol: true })
   livestreamUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  bestOf?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
 }

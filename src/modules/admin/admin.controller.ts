@@ -107,4 +107,19 @@ export class AdminController {
   ) {
     return this.adminService.updateUserStatus(id, user.sub, dto);
   }
+
+  @Patch('users/:id/ban')
+  banUser(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.adminService.banUser(id, user.sub);
+  }
+
+  @Patch('users/:id/unban')
+  unbanUser(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.adminService.unbanUser(id, user.sub);
+  }
+
+  @Get('analytics')
+  getAnalytics() {
+    return this.adminService.getAnalytics();
+  }
 }

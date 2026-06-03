@@ -15,5 +15,13 @@ export class SubmitMatchResultDto {
 
   @IsOptional()
   @IsString()
+  fileUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @IsOptional()
+  @IsString()
   note?: string;
 }

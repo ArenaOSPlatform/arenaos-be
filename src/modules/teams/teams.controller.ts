@@ -49,21 +49,6 @@ export class TeamsController {
     return this.teamsService.findAll();
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.teamsService.findOne(id);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Patch(':id')
-  updateTeam(
-    @Param('id') id: string,
-    @CurrentUser() user: JwtPayload,
-    @Body() dto: UpdateTeamDto,
-  ) {
-    return this.teamsService.updateTeam(id, user.sub, dto);
-  }
-
   @UseGuards(JwtAuthGuard)
   @Delete(':teamId/members/:userId')
   removeMember(
@@ -81,7 +66,7 @@ export class TeamsController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post(':teamId/invite')
+  @Post([':teamId/invites', ':teamId/invite'])
   inviteMember(
     @Param('teamId') teamId: string,
     @CurrentUser() user: JwtPayload,
@@ -112,5 +97,20 @@ export class TeamsController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.teamsService.rejectInvite(inviteId, user.sub);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.teamsService.findOne(id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id')
+  updateTeam(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateTeamDto,
+  ) {
+    return this.teamsService.updateTeam(id, user.sub, dto);
   }
 }

@@ -5,6 +5,14 @@ export class CreateTeamDto {
   @IsString()
   name!: string;
 
+  @IsNotEmpty()
+  @IsString()
+  game!: string;
+
+  @IsNotEmpty()
+  @IsString()
+  region!: string;
+
   @IsOptional()
   @IsString()
   description?: string;

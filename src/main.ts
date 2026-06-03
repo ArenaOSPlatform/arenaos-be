@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
@@ -9,6 +10,8 @@ const defaultCorsOrigins = [
   'http://localhost:5173',
   'https://arenaos-fe.vercel.app',
 ];
+const vercelArenaOsOriginPattern =
+  /^https:\/\/arenaos[-a-z0-9]*\.vercel\.app$/i;
 
 function getCorsOrigins(): string[] {
   const envOrigins =
@@ -17,11 +20,23 @@ function getCorsOrigins(): string[] {
   return [...new Set([...defaultCorsOrigins, ...envOrigins].filter(Boolean))];
 }
 
+function isAllowedCorsOrigin(origin?: string): boolean {
+  if (!origin) {
+    return true;
+  }
+
+  return (
+    getCorsOrigins().includes(origin) || vercelArenaOsOriginPattern.test(origin)
+  );
+}
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   app.enableCors({
-    origin: getCorsOrigins(),
+    origin: (origin, callback) => {
+      callback(null, isAllowedCorsOrigin(origin));
+    },
     credentials: true,
   });
   app.useStaticAssets(join(process.cwd(), 'uploads'), {

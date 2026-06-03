@@ -7,5 +7,13 @@ export class CreateEvidenceDto {
 
   @IsOptional()
   @IsString()
+  fileUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @IsOptional()
+  @IsString()
   note?: string;
 }

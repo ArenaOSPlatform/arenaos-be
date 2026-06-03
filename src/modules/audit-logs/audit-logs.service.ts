@@ -12,13 +12,19 @@ export class AuditLogsService {
     entityId: string,
     metadata?: unknown,
   ) {
+    const serializedMetadata = metadata ? JSON.stringify(metadata) : null;
+
     return this.prisma.auditLog.create({
       data: {
         userId,
+        actorId: userId,
         action,
         entityType,
+        targetType: entityType,
         entityId,
-        metadata: metadata ? JSON.stringify(metadata) : null,
+        targetId: entityId,
+        metadata: serializedMetadata,
+        newValue: serializedMetadata,
       },
     });
   }

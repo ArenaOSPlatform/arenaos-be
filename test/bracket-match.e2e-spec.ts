@@ -6,6 +6,8 @@ import { App } from 'supertest/types';
 
 import { AppModule } from './../src/app.module';
 
+jest.setTimeout(30000);
+
 type LoginResponse = {
   data: {
     accessToken: string;
@@ -123,6 +125,8 @@ describe('Bracket + Match E2E', () => {
       .set('Authorization', `Bearer ${body.data.accessToken}`)
       .send({
         name: `Bracket E2E Team ${index} ${runId}`,
+        game: 'Valorant',
+        region: 'VN',
         description: 'Bracket E2E test team',
       })
       .expect(201);
@@ -163,6 +167,17 @@ describe('Bracket + Match E2E', () => {
     const teamBEmail = await getTeamCaptainEmail(match.teamBId);
     const teamAToken = await loginByEmail(teamAEmail);
     const teamBToken = await loginByEmail(teamBEmail);
+    const scheduledAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+    await request(app.getHttpServer())
+      .patch(`/matches/${matchId}/schedule`)
+      .set('Authorization', `Bearer ${organizerToken}`)
+      .send({
+        scheduledAt,
+        roomCode: `ROOM-${matchId.slice(0, 5)}`,
+        bestOf: 'BO3',
+      })
+      .expect(200);
 
     await request(app.getHttpServer())
       .post(`/matches/${matchId}/check-in`)
@@ -282,15 +297,15 @@ describe('Bracket + Match E2E', () => {
       const registrationBody = registrationRes.body as RegistrationResponse;
 
       await request(app.getHttpServer())
-        .post(`/tournaments/registrations/${registrationBody.data.id}/approve`)
+        .post(`/registrations/${registrationBody.data.id}/approve`)
         .set('Authorization', `Bearer ${organizerToken}`)
         .expect(201);
     }
 
     await request(app.getHttpServer())
-      .patch(`/tournaments/${tournamentId}/close-registration`)
+      .post(`/tournaments/${tournamentId}/close-registration`)
       .set('Authorization', `Bearer ${organizerToken}`)
-      .expect(200);
+      .expect(201);
 
     const generateRes = await request(app.getHttpServer())
       .post(`/tournaments/${tournamentId}/generate-bracket`)
