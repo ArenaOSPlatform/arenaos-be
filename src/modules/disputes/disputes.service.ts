@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UserRole } from '../auth/constants/user-role';
@@ -53,22 +57,6 @@ export class DisputesService {
     );
   }
 
-  private async advanceWinner(
-    match: {
-      nextMatchId: string | null;
-      nextSlot: string | null;
-    },
-    winnerId: string,
-  ) {
-    if (!match.nextMatchId || !match.nextSlot) return;
-
-    await this.prisma.match.update({
-      where: { id: match.nextMatchId },
-      data:
-        match.nextSlot === 'A' ? { teamAId: winnerId } : { teamBId: winnerId },
-    });
-  }
-
   async createDispute(matchId: string, userId: string, dto: CreateDisputeDto) {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
@@ -92,38 +80,60 @@ export class DisputesService {
           in: [match.teamAId, match.teamBId].filter(Boolean) as string[],
         },
       },
-      select: { teamId: true },
-    });
-
-    const evidenceUrl = dto.fileUrl ?? dto.imageUrl;
-
-    if (evidenceUrl) {
-      await this.prisma.matchEvidence.create({
-        data: {
-          matchId,
-          submittedBy: userId,
-          imageUrl: evidenceUrl,
-          fileUrl: evidenceUrl,
-          type: dto.type ?? 'SCREENSHOT',
-          note: 'Dispute evidence',
+      include: {
+        team: {
+          select: {
+            captainId: true,
+          },
         },
-      });
-    }
-
-    const dispute = await this.prisma.dispute.create({
-      data: {
-        matchId,
-        createdBy: userId,
-        teamId: membership?.teamId ?? null,
-        reason: dto.reason,
-        description: dto.description,
       },
     });
 
-    const updatedMatch = await this.prisma.match.update({
-      where: { id: matchId },
-      data: { status: 'DISPUTED' },
-    });
+    if (!membership || membership.team.captainId !== userId) {
+      throw new BadRequestException(
+        'Only a captain from this match can create dispute',
+      );
+    }
+
+    const evidenceUrl = dto.fileUrl ?? dto.imageUrl;
+
+    const { dispute, updatedMatch } = await this.prisma.$transaction(
+      async (transaction) => {
+        if (evidenceUrl) {
+          await transaction.matchEvidence.create({
+            data: {
+              matchId,
+              submittedBy: userId,
+              imageUrl: evidenceUrl,
+              fileUrl: evidenceUrl,
+              type: dto.type ?? 'SCREENSHOT',
+              note: 'Dispute evidence',
+            },
+          });
+        }
+
+        const createdDispute = await transaction.dispute.create({
+          data: {
+            matchId,
+            createdBy: userId,
+            teamId: membership.teamId,
+            reason: dto.reason,
+            description: dto.description,
+          },
+        });
+
+        const disputedMatch = await transaction.match.update({
+          where: { id: matchId },
+          data: { status: 'DISPUTED' },
+        });
+
+        return {
+          dispute: createdDispute,
+          updatedMatch: disputedMatch,
+        };
+      },
+      { timeout: 30_000 },
+    );
 
     await this.auditLogsService.createLog(
       userId,
@@ -133,7 +143,7 @@ export class DisputesService {
       {
         matchId,
         tournamentId: match.tournamentId,
-        teamId: membership?.teamId ?? null,
+        teamId: membership.teamId,
       },
     );
 
@@ -154,8 +164,28 @@ export class DisputesService {
     };
   }
 
-  async getDisputes() {
+  async getDisputes(userId: string, userRole: UserRole) {
+    const teamIds =
+      userRole === UserRole.PLAYER
+        ? (
+            await this.prisma.teamMember.findMany({
+              where: { userId },
+              select: { teamId: true },
+            })
+          ).map((membership) => membership.teamId)
+        : [];
     const disputes = await this.prisma.dispute.findMany({
+      where:
+        userRole === UserRole.ADMIN
+          ? undefined
+          : userRole === UserRole.ORGANIZER
+            ? { match: { tournament: { organizerId: userId } } }
+            : {
+                OR: [
+                  { createdBy: userId },
+                  ...(teamIds.length > 0 ? [{ teamId: { in: teamIds } }] : []),
+                ],
+              },
       include: {
         match: {
           include: {
@@ -175,7 +205,7 @@ export class DisputesService {
     };
   }
 
-  async getDispute(disputeId: string) {
+  async getDispute(disputeId: string, userId: string, userRole: UserRole) {
     const dispute = await this.prisma.dispute.findUnique({
       where: { id: disputeId },
       include: {
@@ -190,6 +220,31 @@ export class DisputesService {
 
     if (!dispute) {
       throw new BadRequestException('Dispute not found');
+    }
+
+    const isOrganizer = dispute.match.tournament.organizerId === userId;
+    const isCreator = dispute.createdBy === userId;
+    const isTeamMember = dispute.teamId
+      ? Boolean(
+          await this.prisma.teamMember.findUnique({
+            where: {
+              teamId_userId: {
+                teamId: dispute.teamId,
+                userId,
+              },
+            },
+            select: { id: true },
+          }),
+        )
+      : false;
+
+    if (
+      userRole !== UserRole.ADMIN &&
+      !isOrganizer &&
+      !isCreator &&
+      !isTeamMember
+    ) {
+      throw new ForbiddenException('You cannot access this dispute');
     }
 
     return {
@@ -239,7 +294,7 @@ export class DisputesService {
       where: { id: disputeId },
       data: {
         status: 'EVIDENCE_REQUESTED',
-        decision: message ?? 'More evidence requested',
+        decisionReason: message?.trim() || 'More evidence requested',
       },
     });
 
@@ -324,75 +379,165 @@ export class DisputesService {
       throw new BadRequestException('Match does not have enough teams');
     }
 
-    if (dto.decision !== 'REMATCH') {
-      if (match.pendingScoreA === null || match.pendingScoreB === null) {
+    const decisionReason = dto.decisionReason.trim();
+
+    if (!decisionReason) {
+      throw new BadRequestException('Decision reason is required');
+    }
+
+    let updatedMatchStatus = 'COMPLETED';
+    let resultStatus = 'RESOLVED';
+    let winnerId: string | null = null;
+    let scoreA = match.pendingScoreA;
+    let scoreB = match.pendingScoreB;
+
+    if (dto.scoreA !== undefined || dto.scoreB !== undefined) {
+      if (dto.scoreA === undefined || dto.scoreB === undefined) {
+        throw new BadRequestException(
+          'Both scoreA and scoreB are required when changing result',
+        );
+      }
+
+      validateBestOfScore(match.bestOf, dto.scoreA, dto.scoreB);
+      scoreA = dto.scoreA;
+      scoreB = dto.scoreB;
+    }
+
+    if (dto.decision === 'KEEP_RESULT') {
+      if (scoreA === null || scoreB === null) {
         throw new BadRequestException('Pending result is incomplete');
       }
 
-      validateBestOfScore(
-        match.bestOf,
-        match.pendingScoreA,
-        match.pendingScoreB,
-      );
+      validateBestOfScore(match.bestOf, scoreA, scoreB);
+      winnerId = scoreA > scoreB ? match.teamAId : match.teamBId;
     }
 
-    const resolved = await this.prisma.dispute.update({
-      where: { id: disputeId },
-      data: {
-        status: 'RESOLVED',
-        decision: dto.decision,
-        resolvedBy: userId,
-        resolvedAt: new Date(),
-      },
-    });
+    if (dto.decision === 'CHANGE_RESULT') {
+      if (dto.scoreA === undefined || dto.scoreB === undefined) {
+        throw new BadRequestException(
+          'scoreA and scoreB are required for CHANGE_RESULT',
+        );
+      }
 
-    let updatedMatchStatus = 'COMPLETED';
-    let winnerId: string | null = null;
+      winnerId = dto.scoreA > dto.scoreB ? match.teamAId : match.teamBId;
+      resultStatus = 'CHANGED_BY_DISPUTE';
+    }
 
-    if (dto.decision === 'APPROVE_TEAM_A_RESULT') {
+    if (
+      dto.decision === 'APPROVE_TEAM_A_RESULT' ||
+      dto.decision === 'TECHNICAL_WIN_TEAM_A' ||
+      dto.decision === 'DISQUALIFY_TEAM_B'
+    ) {
       winnerId = match.teamAId;
     }
 
-    if (dto.decision === 'APPROVE_TEAM_B_RESULT') {
+    if (
+      dto.decision === 'APPROVE_TEAM_B_RESULT' ||
+      dto.decision === 'TECHNICAL_WIN_TEAM_B' ||
+      dto.decision === 'DISQUALIFY_TEAM_A'
+    ) {
       winnerId = match.teamBId;
+    }
+
+    if (dto.decision.startsWith('TECHNICAL_WIN')) {
+      resultStatus = 'TECHNICAL_WIN';
+    }
+
+    if (dto.decision.startsWith('DISQUALIFY')) {
+      resultStatus = 'DISQUALIFIED';
     }
 
     if (dto.decision === 'REMATCH') {
       updatedMatchStatus = 'READY';
-
-      await this.prisma.match.update({
-        where: { id: dispute.matchId },
-        data: {
-          status: updatedMatchStatus,
-          resultStatus: 'REMATCH',
-          pendingScoreA: null,
-          pendingScoreB: null,
-          resultSubmittedBy: null,
-          resultSubmittedTeamId: null,
-          resultSubmittedAt: null,
-          resultEvidenceId: null,
-          scoreA: 0,
-          scoreB: 0,
-          winnerId: null,
-        },
-      });
+      resultStatus = 'REMATCH';
     } else {
+      if (scoreA === null || scoreB === null) {
+        if (
+          resultStatus === 'TECHNICAL_WIN' ||
+          resultStatus === 'DISQUALIFIED'
+        ) {
+          scoreA = winnerId === match.teamAId ? 1 : 0;
+          scoreB = winnerId === match.teamBId ? 1 : 0;
+        } else {
+          throw new BadRequestException('Pending result is incomplete');
+        }
+      }
+
       if (!winnerId) {
         throw new BadRequestException('Winner cannot be determined');
       }
+    }
 
-      await this.prisma.match.update({
-        where: { id: dispute.matchId },
-        data: {
-          status: updatedMatchStatus,
-          resultStatus: 'RESOLVED',
-          scoreA: match.pendingScoreA!,
-          scoreB: match.pendingScoreB!,
-          winnerId,
-        },
-      });
+    const completedResult =
+      dto.decision === 'REMATCH'
+        ? null
+        : {
+            scoreA: scoreA as number,
+            scoreB: scoreB as number,
+            winnerId: winnerId as string,
+          };
 
-      await this.advanceWinner(match, winnerId);
+    const resolved = await this.prisma.$transaction(
+      async (transaction) => {
+        const updatedDispute = await transaction.dispute.update({
+          where: { id: disputeId },
+          data: {
+            status: 'RESOLVED',
+            decision: dto.decision,
+            decisionReason,
+            resolvedBy: userId,
+            resolvedAt: new Date(),
+          },
+        });
+
+        if (!completedResult) {
+          await transaction.match.update({
+            where: { id: dispute.matchId },
+            data: {
+              status: updatedMatchStatus,
+              resultStatus,
+              pendingScoreA: null,
+              pendingScoreB: null,
+              resultSubmittedBy: null,
+              resultSubmittedTeamId: null,
+              resultSubmittedAt: null,
+              resultEvidenceId: null,
+              scoreA: 0,
+              scoreB: 0,
+              winnerId: null,
+            },
+          });
+
+          return updatedDispute;
+        }
+
+        await transaction.match.update({
+          where: { id: dispute.matchId },
+          data: {
+            status: updatedMatchStatus,
+            resultStatus,
+            scoreA: completedResult.scoreA,
+            scoreB: completedResult.scoreB,
+            winnerId: completedResult.winnerId,
+          },
+        });
+
+        if (match.nextMatchId && match.nextSlot) {
+          await transaction.match.update({
+            where: { id: match.nextMatchId },
+            data:
+              match.nextSlot === 'A'
+                ? { teamAId: completedResult.winnerId }
+                : { teamBId: completedResult.winnerId },
+          });
+        }
+
+        return updatedDispute;
+      },
+      { timeout: 30_000 },
+    );
+
+    if (completedResult) {
       await this.leaderboardsService.recalculateTournamentLeaderboard(
         match.tournamentId,
         dispute.matchId,
@@ -414,6 +559,7 @@ export class DisputesService {
         matchId: dispute.matchId,
         tournamentId: match.tournamentId,
         decision: dto.decision,
+        decisionReason,
         winnerId,
         resolvedByRole: userRole,
       },
@@ -434,6 +580,7 @@ export class DisputesService {
         tournamentId: match.tournamentId,
         disputeId,
         decision: dto.decision,
+        decisionReason,
         winnerId,
       },
     });

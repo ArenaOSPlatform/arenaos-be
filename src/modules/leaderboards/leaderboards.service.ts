@@ -332,9 +332,12 @@ export class LeaderboardsService {
     };
   }
 
-  async getMyTeamRankingHistory(userId: string) {
+  async getMyTeamRankingHistory(userId: string, teamId?: string) {
     const teamMember = await this.prisma.teamMember.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        ...(teamId ? { teamId } : {}),
+      },
       include: {
         team: {
           select: {
@@ -353,7 +356,9 @@ export class LeaderboardsService {
 
     if (!teamMember) {
       return {
-        message: 'You are not in any team',
+        message: teamId
+          ? 'You are not in this team'
+          : 'You are not in any team',
         data: null,
       };
     }

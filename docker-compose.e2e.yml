@@ -1,0 +1,21 @@
+services:
+  arenaos-e2e-db:
+    image: postgres:16-alpine
+    container_name: arenaos-e2e-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: arenaos_test
+      POSTGRES_USER: arenaos
+      POSTGRES_PASSWORD: arenaos
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arenaos -d arenaos_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - arenaos-e2e-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  arenaos-e2e-postgres-data:

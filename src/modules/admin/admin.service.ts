@@ -117,6 +117,18 @@ export class AdminService {
     };
   }
 
+  async getIntegrationDeliveryLogs() {
+    const logs = await this.prisma.integrationDeliveryLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    return {
+      message: 'Get integration delivery logs successfully',
+      data: logs,
+    };
+  }
+
   async getOrganizerRequests() {
     const requests = await this.prisma.organizerRequest.findMany({
       include: {
@@ -245,13 +257,19 @@ export class AdminService {
       throw new BadRequestException('Organizer request is already reviewed');
     }
 
+    const rejectReason = dto.reason?.trim();
+
+    if (!rejectReason) {
+      throw new BadRequestException('Reject reason is required');
+    }
+
     const updatedRequest = await this.prisma.organizerRequest.update({
       where: { id: requestId },
       data: {
         status: 'REJECTED',
         reviewedBy: adminId,
         reviewedAt: new Date(),
-        reviewNote: dto.reason ?? 'No reason provided',
+        reviewNote: rejectReason,
       },
       include: {
         user: {
@@ -420,11 +438,16 @@ export class AdminService {
       throw new BadRequestException('Tournament is not pending approval');
     }
 
-    const reason = dto.reason ?? 'No reason provided';
+    const reason = dto.reason?.trim();
+
+    if (!reason) {
+      throw new BadRequestException('Reject reason is required');
+    }
+
     const updatedTournament = await this.prisma.tournament.update({
       where: { id: tournamentId },
       data: {
-        status: 'DRAFT',
+        status: 'REJECTED',
         approvalReviewedAt: new Date(),
         approvalReviewedBy: adminId,
         approvalRejectReason: reason,

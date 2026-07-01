@@ -39,6 +39,11 @@ export class AdminController {
     return this.adminService.getTournaments();
   }
 
+  @Get('integration-deliveries')
+  getIntegrationDeliveryLogs() {
+    return this.adminService.getIntegrationDeliveryLogs();
+  }
+
   @Get('organizer-requests')
   getOrganizerRequests() {
     return this.adminService.getOrganizerRequests();

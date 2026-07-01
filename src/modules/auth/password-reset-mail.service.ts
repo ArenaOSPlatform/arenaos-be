@@ -1,11 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
+
+export type PasswordResetMailDelivery = {
+  configured: boolean;
+  sent: boolean;
+  messageId?: string;
+};
 
 @Injectable()
 export class PasswordResetMailService {
   private readonly logger = new Logger(PasswordResetMailService.name);
-  private transporter: Transporter | null = null;
+  private transporter: Transporter<SMTPTransport.SentMessageInfo> | null = null;
 
   private getTransporter() {
     if (this.transporter) {
@@ -37,20 +44,30 @@ export class PasswordResetMailService {
     return this.transporter;
   }
 
-  async sendPasswordResetOtp(email: string, otp: string) {
+  async sendPasswordResetOtp(
+    email: string,
+    otp: string,
+  ): Promise<PasswordResetMailDelivery> {
     const transporter = this.getTransporter();
     const expiresInMinutes = process.env.PASSWORD_RESET_OTP_TTL_MINUTES ?? '10';
 
     if (!transporter) {
+      if (process.env.SMTP_REQUIRE_CONFIG === 'true') {
+        throw new Error('SMTP is not configured');
+      }
+
       this.logger.warn(
-        `SMTP is not configured. Password reset OTP for ${email}: ${otp}`,
+        `SMTP is not configured. Password reset email was not sent to ${email}.`,
       );
-      return;
+      return {
+        configured: false,
+        sent: false,
+      };
     }
 
     const from = process.env.SMTP_FROM ?? 'ArenaOS <no-reply@arenaos.com>';
 
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from,
       to: email,
       subject: 'ArenaOS password reset OTP',
@@ -69,5 +86,11 @@ export class PasswordResetMailService {
         </div>
       `,
     });
+
+    return {
+      configured: true,
+      sent: true,
+      messageId: info.messageId,
+    };
   }
 }

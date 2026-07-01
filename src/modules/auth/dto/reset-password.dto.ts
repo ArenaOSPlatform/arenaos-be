@@ -1,4 +1,7 @@
-import { IsEmail, Matches, MinLength } from 'class-validator';
+import { IsEmail, Matches } from 'class-validator';
+
+const strongPasswordPattern =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\sA-Za-z0-9]).{8,}$/;
 
 export class ResetPasswordDto {
   @IsEmail()
@@ -7,6 +10,9 @@ export class ResetPasswordDto {
   @Matches(/^\d{6}$/)
   otp!: string;
 
-  @MinLength(6)
+  @Matches(strongPasswordPattern, {
+    message:
+      'Password must be at least 8 characters and include uppercase, lowercase, number, and symbol',
+  })
   newPassword!: string;
 }

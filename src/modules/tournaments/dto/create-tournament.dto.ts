@@ -28,6 +28,11 @@ export class CreateTournamentDto {
   @Min(2)
   maxTeams!: number;
 
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  minTeams?: number;
+
   @IsInt()
   @Min(1)
   teamSize!: number;

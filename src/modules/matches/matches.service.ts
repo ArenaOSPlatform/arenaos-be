@@ -1,5 +1,13 @@
-import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { UserRole } from '../auth/constants/user-role';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LeaderboardsService } from '../leaderboards/leaderboards.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -19,13 +27,47 @@ type CaptainMembership = {
   slot: MatchTeamSlot;
 };
 
+type PublicMatchPayloadSource = {
+  id: string;
+  tournamentId: string;
+  bracketId: string;
+  roundId: string | null;
+  roundNumber: number;
+  matchNumber: number;
+  teamAId: string | null;
+  teamBId: string | null;
+  winnerId: string | null;
+  scoreA: number;
+  scoreB: number;
+  resultStatus: string | null;
+  status: string;
+  scheduledAt: Date | null;
+  livestreamUrl: string | null;
+  bestOf: string | null;
+  nextMatchId: string | null;
+  nextSlot: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+const liveMatchStatuses = ['LIVE', 'IN_PROGRESS'];
+const waitingConfirmationStatuses = [
+  'WAITING_CONFIRMATION',
+  'PENDING_CONFIRMATION',
+];
+const schedulableMatchStatuses = [
+  'PENDING',
+  'PENDING_SCHEDULE',
+  'MATCH_SCHEDULED',
+  'SCHEDULED',
+];
+
 @Injectable()
-export class MatchesService implements OnModuleInit {
-  private readonly reminderTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
+export class MatchesService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(MatchesService.name);
   private readonly reminderLeadMs = 15 * 60 * 1000;
+  private readonly reminderPollMs = 30 * 1000;
+  private reminderPoller?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -37,26 +79,16 @@ export class MatchesService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const scheduledMatches = await this.prisma.match.findMany({
-      where: {
-        scheduledAt: {
-          gt: new Date(),
-        },
-        status: {
-          notIn: ['COMPLETED', 'CANCELLED'],
-        },
-      },
-      select: {
-        id: true,
-        scheduledAt: true,
-      },
-    });
+    await this.processDueReminders();
+    this.reminderPoller = setInterval(() => {
+      void this.processDueReminders();
+    }, this.reminderPollMs);
+  }
 
-    scheduledMatches.forEach((match) => {
-      if (match.scheduledAt) {
-        this.scheduleReminder(match.id, match.scheduledAt);
-      }
-    });
+  onModuleDestroy(): void {
+    if (this.reminderPoller) {
+      clearInterval(this.reminderPoller);
+    }
   }
 
   private async getCaptainMembership(
@@ -181,38 +213,110 @@ export class MatchesService implements OnModuleInit {
     );
   }
 
-  private async advanceWinner(
-    match: {
-      nextMatchId: string | null;
-      nextSlot: string | null;
-    },
-    winnerId: string,
-  ) {
-    if (!match.nextMatchId || !match.nextSlot) return;
-
-    await this.prisma.match.update({
-      where: { id: match.nextMatchId },
-      data:
-        match.nextSlot === 'A' ? { teamAId: winnerId } : { teamBId: winnerId },
-    });
+  private toPublicMatchPayload(match: PublicMatchPayloadSource) {
+    return {
+      id: match.id,
+      tournamentId: match.tournamentId,
+      bracketId: match.bracketId,
+      roundId: match.roundId,
+      roundNumber: match.roundNumber,
+      matchNumber: match.matchNumber,
+      teamAId: match.teamAId,
+      teamBId: match.teamBId,
+      winnerId: match.winnerId,
+      scoreA: match.scoreA,
+      scoreB: match.scoreB,
+      resultStatus: match.resultStatus,
+      status: match.status,
+      scheduledAt: match.scheduledAt,
+      livestreamUrl: match.livestreamUrl,
+      bestOf: match.bestOf,
+      nextMatchId: match.nextMatchId,
+      nextSlot: match.nextSlot,
+      createdAt: match.createdAt,
+      updatedAt: match.updatedAt,
+    };
   }
 
-  private scheduleReminder(matchId: string, scheduledAt: Date) {
-    const existingTimer = this.reminderTimers.get(matchId);
-
-    if (existingTimer) {
-      clearTimeout(existingTimer);
+  private async assertCanAccessMatchRoom(
+    match: {
+      teamAId: string | null;
+      teamBId: string | null;
+      tournament: {
+        organizerId: string;
+      };
+    },
+    userId: string,
+    userRole: UserRole,
+  ) {
+    if (
+      userRole === UserRole.ADMIN ||
+      match.tournament.organizerId === userId
+    ) {
+      return;
     }
 
-    const reminderAt = scheduledAt.getTime() - this.reminderLeadMs;
-    const delay = Math.max(0, reminderAt - Date.now());
+    const teamIds = [match.teamAId, match.teamBId].filter(Boolean) as string[];
 
-    const timer = setTimeout(() => {
-      void this.sendMatchReminder(matchId);
-      this.reminderTimers.delete(matchId);
-    }, delay);
+    if (teamIds.length === 0) {
+      throw new ForbiddenException('You cannot access this match room');
+    }
 
-    this.reminderTimers.set(matchId, timer);
+    const membership = await this.prisma.teamMember.findFirst({
+      where: {
+        userId,
+        teamId: {
+          in: teamIds,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException('You cannot access this match room');
+    }
+  }
+
+  private async processDueReminders(): Promise<void> {
+    const now = new Date();
+    const reminderWindowEnd = new Date(now.getTime() + this.reminderLeadMs);
+    const dueMatches = await this.prisma.match.findMany({
+      where: {
+        scheduledAt: { gt: now, lte: reminderWindowEnd },
+        reminderSentAt: null,
+        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+      },
+      select: { id: true },
+      take: 100,
+    });
+
+    await Promise.all(
+      dueMatches.map(async ({ id }) => {
+        const claimed = await this.prisma.match.updateMany({
+          where: { id, reminderSentAt: null },
+          data: { reminderSentAt: new Date() },
+        });
+
+        if (claimed.count === 0) {
+          return;
+        }
+
+        try {
+          await this.sendMatchReminder(id);
+        } catch (error) {
+          await this.prisma.match.update({
+            where: { id },
+            data: { reminderSentAt: null },
+          });
+          this.logger.error(
+            `Failed to send match reminder for ${id}`,
+            error instanceof Error ? error.stack : String(error),
+          );
+        }
+      }),
+    );
   }
 
   private async sendMatchReminder(matchId: string) {
@@ -298,10 +402,9 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Match does not have enough teams');
     }
 
-    const nextStatus =
-      match.status === 'PENDING' || match.status === 'MATCH_SCHEDULED'
-        ? 'MATCH_SCHEDULED'
-        : match.status;
+    const nextStatus = schedulableMatchStatuses.includes(match.status)
+      ? 'SCHEDULED'
+      : match.status;
 
     const updated = await this.prisma.match.update({
       where: { id: matchId },
@@ -312,6 +415,7 @@ export class MatchesService implements OnModuleInit {
         bestOf,
         note,
         status: nextStatus,
+        reminderSentAt: null,
       },
       include: {
         tournament: true,
@@ -352,13 +456,11 @@ export class MatchesService implements OnModuleInit {
       },
     });
 
-    this.scheduleReminder(matchId, scheduledAt);
-
     this.realtimeGateway.emitMatchEvent(matchId, 'match:scheduled', updated);
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
       'bracket:updated',
-      updated,
+      this.toPublicMatchPayload(updated),
     );
 
     return {
@@ -411,9 +513,9 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Match is already completed or cancelled');
     }
 
-    if (match.status !== 'IN_PROGRESS') {
+    if (!liveMatchStatuses.includes(match.status)) {
       throw new BadRequestException(
-        'Match must be in progress before livestream starts',
+        'Match must be live before livestream starts',
       );
     }
 
@@ -571,7 +673,7 @@ export class MatchesService implements OnModuleInit {
         throw new BadRequestException('Team A has already checked in');
       }
 
-      const nextStatus = match.teamBCheckedInAt ? 'READY' : 'TEAM_A_CHECKED_IN';
+      const nextStatus = match.teamBCheckedInAt ? 'READY' : 'CHECK_IN_OPEN';
 
       const updated = await this.prisma.match.update({
         where: { id: matchId },
@@ -605,13 +707,6 @@ export class MatchesService implements OnModuleInit {
         },
       });
 
-      if (match.tournament.status === 'BRACKET_GENERATED') {
-        await this.prisma.tournament.update({
-          where: { id: match.tournamentId },
-          data: { status: 'CHECK_IN_PHASE' },
-        });
-      }
-
       this.realtimeGateway.emitMatchEvent(
         matchId,
         'match:checkin_updated',
@@ -619,8 +714,8 @@ export class MatchesService implements OnModuleInit {
       );
       this.realtimeGateway.emitTournamentEvent(
         match.tournamentId,
-        'tournament:status_changed',
-        { tournamentId: match.tournamentId, status: 'CHECK_IN_PHASE' },
+        'bracket:updated',
+        this.toPublicMatchPayload(updated),
       );
 
       return {
@@ -636,7 +731,7 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Team B has already checked in');
     }
 
-    const nextStatus = match.teamACheckedInAt ? 'READY' : 'TEAM_B_CHECKED_IN';
+    const nextStatus = match.teamACheckedInAt ? 'READY' : 'CHECK_IN_OPEN';
 
     const updated = await this.prisma.match.update({
       where: { id: matchId },
@@ -670,13 +765,6 @@ export class MatchesService implements OnModuleInit {
       },
     });
 
-    if (match.tournament.status === 'BRACKET_GENERATED') {
-      await this.prisma.tournament.update({
-        where: { id: match.tournamentId },
-        data: { status: 'CHECK_IN_PHASE' },
-      });
-    }
-
     this.realtimeGateway.emitMatchEvent(
       matchId,
       'match:checkin_updated',
@@ -684,8 +772,8 @@ export class MatchesService implements OnModuleInit {
     );
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
-      'tournament:status_changed',
-      { tournamentId: match.tournamentId, status: 'CHECK_IN_PHASE' },
+      'bracket:updated',
+      this.toPublicMatchPayload(updated),
     );
 
     return {
@@ -742,7 +830,7 @@ export class MatchesService implements OnModuleInit {
     const updated = await this.prisma.match.update({
       where: { id: matchId },
       data: {
-        status: 'IN_PROGRESS',
+        status: 'LIVE',
       },
       include: {
         tournament: true,
@@ -836,10 +924,8 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Tournament is completed and archived');
     }
 
-    if (match.status !== 'IN_PROGRESS') {
-      throw new BadRequestException(
-        'Match must be in progress to submit result',
-      );
+    if (!liveMatchStatuses.includes(match.status)) {
+      throw new BadRequestException('Match must be live to submit result');
     }
 
     if (!match.teamAId || !match.teamBId) {
@@ -852,34 +938,41 @@ export class MatchesService implements OnModuleInit {
     const opposingTeamId =
       membership.teamId === match.teamAId ? match.teamBId : match.teamAId;
 
-    const evidence = await this.prisma.matchEvidence.create({
-      data: {
-        matchId,
-        submittedBy: userId,
-        imageUrl: dto.imageUrl,
-        fileUrl: dto.fileUrl ?? dto.imageUrl,
-        type: dto.type ?? 'SCREENSHOT',
-        note: dto.note,
-      },
-    });
+    const { evidence, updated } = await this.prisma.$transaction(
+      async (transaction) => {
+        const createdEvidence = await transaction.matchEvidence.create({
+          data: {
+            matchId,
+            submittedBy: userId,
+            imageUrl: dto.imageUrl,
+            fileUrl: dto.fileUrl ?? dto.imageUrl,
+            type: dto.type ?? 'SCREENSHOT',
+            note: dto.note,
+          },
+        });
 
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        pendingScoreA: dto.scoreA,
-        pendingScoreB: dto.scoreB,
-        resultStatus: 'PENDING_CONFIRMATION',
-        resultSubmittedBy: userId,
-        resultSubmittedTeamId: membership.teamId,
-        resultSubmittedAt: new Date(),
-        resultEvidenceId: evidence.id,
-        status: 'PENDING_CONFIRMATION',
+        const updatedMatch = await transaction.match.update({
+          where: { id: matchId },
+          data: {
+            pendingScoreA: dto.scoreA,
+            pendingScoreB: dto.scoreB,
+            resultStatus: 'PENDING_CONFIRMATION',
+            resultSubmittedBy: userId,
+            resultSubmittedTeamId: membership.teamId,
+            resultSubmittedAt: new Date(),
+            resultEvidenceId: createdEvidence.id,
+            status: 'WAITING_CONFIRMATION',
+          },
+          include: {
+            tournament: true,
+            bracket: true,
+          },
+        });
+
+        return { evidence: createdEvidence, updated: updatedMatch };
       },
-      include: {
-        tournament: true,
-        bracket: true,
-      },
-    });
+      { timeout: 30_000 },
+    );
 
     await this.auditLogsService.createLog(
       userId,
@@ -894,19 +987,6 @@ export class MatchesService implements OnModuleInit {
         evidenceId: evidence.id,
       },
     );
-
-    if (!match.nextMatchId) {
-      await this.prisma.tournament.update({
-        where: { id: match.tournamentId },
-        data: { status: 'FINALIZING' },
-      });
-
-      this.realtimeGateway.emitTournamentEvent(
-        match.tournamentId,
-        'tournament:status_changed',
-        { tournamentId: match.tournamentId, status: 'FINALIZING' },
-      );
-    }
 
     await this.notifyTeamMembers([opposingTeamId], {
       title: 'Match result needs confirmation',
@@ -927,7 +1007,7 @@ export class MatchesService implements OnModuleInit {
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
       'bracket:updated',
-      updated,
+      this.toPublicMatchPayload(updated),
     );
 
     return {
@@ -952,49 +1032,68 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Tournament is completed and archived');
     }
 
-    if (match.status !== 'PENDING_CONFIRMATION') {
+    if (!waitingConfirmationStatuses.includes(match.status)) {
       throw new BadRequestException('Match result is not pending confirmation');
     }
 
+    const pendingScoreA = match.pendingScoreA;
+    const pendingScoreB = match.pendingScoreB;
+    const resultSubmittedTeamId = match.resultSubmittedTeamId;
+
     if (
-      match.pendingScoreA === null ||
-      match.pendingScoreB === null ||
-      !match.resultSubmittedTeamId
+      pendingScoreA === null ||
+      pendingScoreB === null ||
+      !resultSubmittedTeamId
     ) {
       throw new BadRequestException('Pending result is incomplete');
     }
 
     const membership = await this.getCaptainMembership(match, userId);
 
-    if (membership.teamId === match.resultSubmittedTeamId) {
+    if (membership.teamId === resultSubmittedTeamId) {
       throw new BadRequestException(
         'Submitting team cannot confirm its own result',
       );
     }
 
     const winnerId =
-      match.pendingScoreA > match.pendingScoreB ? match.teamAId : match.teamBId;
+      pendingScoreA > pendingScoreB ? match.teamAId : match.teamBId;
 
     if (!winnerId) {
       throw new BadRequestException('Winner cannot be determined');
     }
 
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        scoreA: match.pendingScoreA,
-        scoreB: match.pendingScoreB,
-        winnerId,
-        resultStatus: 'CONFIRMED',
-        status: 'COMPLETED',
-      },
-      include: {
-        tournament: true,
-        bracket: true,
-      },
-    });
+    const updated = await this.prisma.$transaction(
+      async (transaction) => {
+        const updatedMatch = await transaction.match.update({
+          where: { id: matchId },
+          data: {
+            scoreA: pendingScoreA,
+            scoreB: pendingScoreB,
+            winnerId,
+            resultStatus: 'CONFIRMED',
+            status: 'COMPLETED',
+          },
+          include: {
+            tournament: true,
+            bracket: true,
+          },
+        });
 
-    await this.advanceWinner(match, winnerId);
+        if (match.nextMatchId && match.nextSlot) {
+          await transaction.match.update({
+            where: { id: match.nextMatchId },
+            data:
+              match.nextSlot === 'A'
+                ? { teamAId: winnerId }
+                : { teamBId: winnerId },
+          });
+        }
+
+        return updatedMatch;
+      },
+      { timeout: 30_000 },
+    );
     await this.leaderboardsService.recalculateTournamentLeaderboard(
       match.tournamentId,
       matchId,
@@ -1015,8 +1114,8 @@ export class MatchesService implements OnModuleInit {
         tournamentId: match.tournamentId,
         confirmedByTeamId: membership.teamId,
         winnerId,
-        scoreA: match.pendingScoreA,
-        scoreB: match.pendingScoreB,
+        scoreA: pendingScoreA,
+        scoreB: pendingScoreB,
       },
     );
 
@@ -1035,7 +1134,7 @@ export class MatchesService implements OnModuleInit {
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
       'bracket:updated',
-      updated,
+      this.toPublicMatchPayload(updated),
     );
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
@@ -1069,7 +1168,7 @@ export class MatchesService implements OnModuleInit {
       throw new BadRequestException('Tournament is completed and archived');
     }
 
-    if (match.status !== 'PENDING_CONFIRMATION') {
+    if (!waitingConfirmationStatuses.includes(match.status)) {
       throw new BadRequestException('Match result is not pending confirmation');
     }
 
@@ -1085,40 +1184,47 @@ export class MatchesService implements OnModuleInit {
       );
     }
 
-    if (dto.imageUrl) {
-      await this.prisma.matchEvidence.create({
-        data: {
-          matchId,
-          submittedBy: userId,
-          imageUrl: dto.imageUrl,
-          fileUrl: dto.fileUrl ?? dto.imageUrl,
-          type: dto.type ?? 'SCREENSHOT',
-          note: dto.note ?? 'Dispute evidence',
-        },
-      });
-    }
+    const { dispute, updated } = await this.prisma.$transaction(
+      async (transaction) => {
+        if (dto.imageUrl) {
+          await transaction.matchEvidence.create({
+            data: {
+              matchId,
+              submittedBy: userId,
+              imageUrl: dto.imageUrl,
+              fileUrl: dto.fileUrl ?? dto.imageUrl,
+              type: dto.type ?? 'SCREENSHOT',
+              note: dto.note ?? 'Dispute evidence',
+            },
+          });
+        }
 
-    const dispute = await this.prisma.dispute.create({
-      data: {
-        matchId,
-        createdBy: userId,
-        teamId: membership.teamId,
-        reason: dto.reason,
-        description: dto.description,
-      },
-    });
+        const createdDispute = await transaction.dispute.create({
+          data: {
+            matchId,
+            createdBy: userId,
+            teamId: membership.teamId,
+            reason: dto.reason,
+            description: dto.description,
+          },
+        });
 
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        resultStatus: 'DISPUTED',
-        status: 'DISPUTED',
+        const updatedMatch = await transaction.match.update({
+          where: { id: matchId },
+          data: {
+            resultStatus: 'DISPUTED',
+            status: 'DISPUTED',
+          },
+          include: {
+            tournament: true,
+            bracket: true,
+          },
+        });
+
+        return { dispute: createdDispute, updated: updatedMatch };
       },
-      include: {
-        tournament: true,
-        bracket: true,
-      },
-    });
+      { timeout: 30_000 },
+    );
 
     await this.auditLogsService.createLog(
       userId,
@@ -1149,7 +1255,7 @@ export class MatchesService implements OnModuleInit {
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
       'bracket:updated',
-      updated,
+      this.toPublicMatchPayload(updated),
     );
 
     return {
@@ -1187,9 +1293,11 @@ export class MatchesService implements OnModuleInit {
     }
 
     if (
-      !['IN_PROGRESS', 'PENDING_CONFIRMATION', 'DISPUTED'].includes(
-        match.status,
-      )
+      ![
+        ...liveMatchStatuses,
+        ...waitingConfirmationStatuses,
+        'DISPUTED',
+      ].includes(match.status)
     ) {
       throw new BadRequestException(
         'Match must be in progress before submitting result',
@@ -1200,26 +1308,33 @@ export class MatchesService implements OnModuleInit {
 
     const winnerId = dto.scoreA > dto.scoreB ? match.teamAId : match.teamBId;
 
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        scoreA: dto.scoreA,
-        scoreB: dto.scoreB,
-        winnerId,
-        resultStatus: 'ORGANIZER_CONFIRMED',
-        status: 'COMPLETED',
-      },
-    });
+    const updated = await this.prisma.$transaction(
+      async (transaction) => {
+        const updatedMatch = await transaction.match.update({
+          where: { id: matchId },
+          data: {
+            scoreA: dto.scoreA,
+            scoreB: dto.scoreB,
+            winnerId,
+            resultStatus: 'ORGANIZER_CONFIRMED',
+            status: 'COMPLETED',
+          },
+        });
 
-    if (match.nextMatchId && match.nextSlot) {
-      await this.prisma.match.update({
-        where: { id: match.nextMatchId },
-        data:
-          match.nextSlot === 'A'
-            ? { teamAId: winnerId }
-            : { teamBId: winnerId },
-      });
-    }
+        if (match.nextMatchId && match.nextSlot) {
+          await transaction.match.update({
+            where: { id: match.nextMatchId },
+            data:
+              match.nextSlot === 'A'
+                ? { teamAId: winnerId }
+                : { teamBId: winnerId },
+          });
+        }
+
+        return updatedMatch;
+      },
+      { timeout: 30_000 },
+    );
 
     await this.leaderboardsService.recalculateTournamentLeaderboard(
       match.tournamentId,
@@ -1249,7 +1364,7 @@ export class MatchesService implements OnModuleInit {
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
       'bracket:updated',
-      updated,
+      this.toPublicMatchPayload(updated),
     );
     this.realtimeGateway.emitTournamentEvent(
       match.tournamentId,
@@ -1263,7 +1378,7 @@ export class MatchesService implements OnModuleInit {
     };
   }
 
-  async findOne(matchId: string) {
+  async findOne(matchId: string, userId: string, userRole: UserRole) {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
       include: {
@@ -1277,6 +1392,8 @@ export class MatchesService implements OnModuleInit {
     if (!match) {
       throw new BadRequestException('Match not found');
     }
+
+    await this.assertCanAccessMatchRoom(match, userId, userRole);
 
     const teamIds = [
       ...new Set(
