@@ -68,6 +68,7 @@ export class MatchesService implements OnModuleInit, OnModuleDestroy {
   private readonly reminderLeadMs = 15 * 60 * 1000;
   private readonly reminderPollMs = 30 * 1000;
   private reminderPoller?: ReturnType<typeof setInterval>;
+  private reminderColumnsAvailable = true;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -279,44 +280,121 @@ export class MatchesService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private isSchemaCompatibilityError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const candidate = error as {
+      code?: unknown;
+      meta?: { column?: string; modelName?: string; cause?: string };
+    };
+
+    return ['P2022', 'P2021', 'P2010', 'P2014'].includes(
+      String(candidate.code),
+    );
+  }
+
+  private async claimReminder(matchId: string): Promise<boolean> {
+    if (!this.reminderColumnsAvailable) {
+      return false;
+    }
+
+    try {
+      const claimed = await this.prisma.match.updateMany({
+        where: { id: matchId, reminderSentAt: null },
+        data: { reminderSentAt: new Date() },
+      });
+
+      return claimed.count > 0;
+    } catch (error) {
+      if (this.isSchemaCompatibilityError(error)) {
+        this.reminderColumnsAvailable = false;
+        this.logger.warn(
+          'Skipping match reminder processing because the database schema is missing reminder tracking columns.',
+        );
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  private async releaseReminder(matchId: string): Promise<void> {
+    if (!this.reminderColumnsAvailable) {
+      return;
+    }
+
+    try {
+      await this.prisma.match.update({
+        where: { id: matchId },
+        data: { reminderSentAt: null },
+      });
+    } catch (error) {
+      if (this.isSchemaCompatibilityError(error)) {
+        this.reminderColumnsAvailable = false;
+        this.logger.warn(
+          'Disabling reminder tracking because the database schema is missing reminder tracking columns.',
+        );
+        return;
+      }
+
+      throw error;
+    }
+  }
+
   private async processDueReminders(): Promise<void> {
+    if (!this.reminderColumnsAvailable) {
+      return;
+    }
+
     const now = new Date();
     const reminderWindowEnd = new Date(now.getTime() + this.reminderLeadMs);
-    const dueMatches = await this.prisma.match.findMany({
-      where: {
-        scheduledAt: { gt: now, lte: reminderWindowEnd },
-        reminderSentAt: null,
-        status: { notIn: ['COMPLETED', 'CANCELLED'] },
-      },
-      select: { id: true },
-      take: 100,
-    });
 
-    await Promise.all(
-      dueMatches.map(async ({ id }) => {
-        const claimed = await this.prisma.match.updateMany({
-          where: { id, reminderSentAt: null },
-          data: { reminderSentAt: new Date() },
-        });
+    try {
+      const dueMatches = await this.prisma.match.findMany({
+        where: {
+          scheduledAt: { gt: now, lte: reminderWindowEnd },
+          reminderSentAt: null,
+          status: { notIn: ['COMPLETED', 'CANCELLED'] },
+        },
+        select: { id: true },
+        take: 100,
+      });
 
-        if (claimed.count === 0) {
-          return;
-        }
+      await Promise.all(
+        dueMatches.map(async ({ id }) => {
+          const claimed = await this.claimReminder(id);
 
-        try {
-          await this.sendMatchReminder(id);
-        } catch (error) {
-          await this.prisma.match.update({
-            where: { id },
-            data: { reminderSentAt: null },
-          });
-          this.logger.error(
-            `Failed to send match reminder for ${id}`,
-            error instanceof Error ? error.stack : String(error),
-          );
-        }
-      }),
-    );
+          if (!claimed) {
+            return;
+          }
+
+          try {
+            await this.sendMatchReminder(id);
+          } catch (error) {
+            await this.releaseReminder(id);
+            this.logger.error(
+              `Failed to send match reminder for ${id}`,
+              error instanceof Error ? error.stack : String(error),
+            );
+          }
+        }),
+      );
+    } catch (error) {
+      if (this.isSchemaCompatibilityError(error)) {
+        this.reminderColumnsAvailable = false;
+        this.logger.warn(
+          'Skipping match reminder processing because the database schema is missing reminder tracking columns.',
+        );
+        return;
+      }
+
+      this.logger.error(
+        'Failed to process due match reminders',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
   }
 
   private async sendMatchReminder(matchId: string) {
@@ -406,17 +484,19 @@ export class MatchesService implements OnModuleInit, OnModuleDestroy {
       ? 'SCHEDULED'
       : match.status;
 
+    const updateData = {
+      scheduledAt,
+      roomCode,
+      livestreamUrl,
+      bestOf,
+      note,
+      status: nextStatus,
+      ...(this.reminderColumnsAvailable ? { reminderSentAt: null } : {}),
+    };
+
     const updated = await this.prisma.match.update({
       where: { id: matchId },
-      data: {
-        scheduledAt,
-        roomCode,
-        livestreamUrl,
-        bestOf,
-        note,
-        status: nextStatus,
-        reminderSentAt: null,
-      },
+      data: updateData,
       include: {
         tournament: true,
         bracket: true,

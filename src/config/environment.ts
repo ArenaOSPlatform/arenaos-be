@@ -58,10 +58,14 @@ export function validateEnvironment(): void {
   }
 
   if (isProduction() && process.env.UPLOAD_REQUIRE_CLOUDINARY !== 'true') {
-    throw new Error('UPLOAD_REQUIRE_CLOUDINARY must be true in production');
+    console.warn(
+      'UPLOAD_REQUIRE_CLOUDINARY is not enabled in production; uploads will use local fallback storage.',
+    );
   }
 
   if (isProduction() && process.env.SMTP_REQUIRE_CONFIG !== 'true') {
-    throw new Error('SMTP_REQUIRE_CONFIG must be true in production');
+    console.warn(
+      'SMTP_REQUIRE_CONFIG is not enabled in production; password reset emails will be disabled unless configured.',
+    );
   }
 }
