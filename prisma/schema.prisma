@@ -43,14 +43,39 @@ model PasswordResetOtp {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  otpHash    String
-  expiresAt  DateTime
-  consumedAt DateTime?
+  otpHash      String
+  attemptCount Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([userId, consumedAt, createdAt])
+}
+
+model IntegrationDeliveryLog {
+  id String @id @default(cuid())
+
+  provider  String
+  eventType String
+  status    String
+
+  recipient String?
+
+  targetType String?
+  targetId   String?
+
+  providerStatus    Int?
+  providerMessageId String?
+  error             String?
+  metadata          String?
+
+  createdAt DateTime @default(now())
+
+  @@index([provider, eventType, status, createdAt])
+  @@index([targetType, targetId])
 }
 
 model OrganizerRequest {
@@ -76,6 +101,9 @@ model OrganizerRequest {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId, status, createdAt])
+  @@index([reviewedBy])
 }
 
 model Team {
@@ -103,6 +131,9 @@ model Team {
   totalLosses        Int                      @default(0)
   championCount      Int                      @default(0)
   overallWinRate     Float                    @default(0)
+
+  @@index([captainId])
+  @@index([status, createdAt])
 }
 
 model TeamMember {
@@ -114,10 +145,11 @@ model TeamMember {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  roleInTeam String @default("MEMBER")
-  joinedAt DateTime @default(now())
+  roleInTeam String   @default("MEMBER")
+  joinedAt   DateTime @default(now())
 
   @@unique([teamId, userId])
+  @@unique([userId])
 }
 
 model TeamInvite {
@@ -138,6 +170,8 @@ model TeamInvite {
   updatedAt DateTime @updatedAt
 
   @@unique([teamId, inviteeId])
+  @@index([inviteeId, status, createdAt])
+  @@index([inviterId])
 }
 
 model Tournament {
@@ -148,12 +182,13 @@ model Tournament {
   bannerUrl   String?
 
   maxTeams Int
+  minTeams Int    @default(2)
   teamSize Int
   format   String
 
-  prizePool String?
-  rules     String?
-  region    String?
+  prizePool     String?
+  rules         String?
+  region        String?
   livestreamUrl String?
 
   status               String    @default("DRAFT")
@@ -180,6 +215,10 @@ model Tournament {
   leaderboardEntries TournamentLeaderboard[]
   rankingHistories   TeamRankingHistory[]
   announcements      TournamentAnnouncement[]
+
+  @@index([organizerId, createdAt])
+  @@index([status, createdAt])
+  @@index([startDate])
 }
 
 model TournamentRegistration {
@@ -199,6 +238,8 @@ model TournamentRegistration {
   updatedAt DateTime @updatedAt
 
   @@unique([tournamentId, teamId])
+  @@index([tournamentId, status, createdAt])
+  @@index([teamId])
 }
 
 model Bracket {
@@ -207,8 +248,8 @@ model Bracket {
   tournamentId String     @unique
   tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  format String
-  status String @default("LOCKED")
+  format      String
+  status      String   @default("LOCKED")
   generatedAt DateTime @default(now())
 
   rounds  BracketRound[]
@@ -272,11 +313,12 @@ model Match {
   teamACheckedInBy String?
   teamBCheckedInBy String?
 
-  scheduledAt   DateTime?
-  livestreamUrl String?
-  roomCode      String?
-  bestOf        String?
-  note          String?
+  scheduledAt    DateTime?
+  reminderSentAt DateTime?
+  livestreamUrl  String?
+  roomCode       String?
+  bestOf         String?
+  note           String?
 
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
@@ -286,19 +328,28 @@ model Match {
 
   nextMatchId String?
   nextSlot    String?
+
+  @@unique([bracketId, roundNumber, matchNumber])
+  @@index([tournamentId, status])
+  @@index([scheduledAt, reminderSentAt])
+  @@index([teamAId])
+  @@index([teamBId])
+  @@index([winnerId])
+  @@index([nextMatchId])
 }
 
 model MatchCheckIn {
   id String @id @default(cuid())
 
   matchId String
-  match   Match @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   teamId      String
   checkedInBy String
   checkedInAt DateTime @default(now())
 
   @@unique([matchId, teamId])
+  @@index([teamId])
 }
 
 model MatchEvidence {
@@ -311,10 +362,13 @@ model MatchEvidence {
 
   imageUrl String
   fileUrl  String?
-  type     String @default("SCREENSHOT")
+  type     String  @default("SCREENSHOT")
   note     String?
 
   createdAt DateTime @default(now())
+
+  @@index([matchId, createdAt])
+  @@index([submittedBy])
 }
 
 model Dispute {
@@ -329,14 +383,19 @@ model Dispute {
   reason      String
   description String?
 
-  status   String  @default("OPEN")
-  decision String?
+  status         String  @default("OPEN")
+  decision       String?
+  decisionReason String?
 
   resolvedBy String?
   resolvedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([matchId, status, createdAt])
+  @@index([teamId])
+  @@index([createdBy])
 }
 
 model TournamentLeaderboard {
@@ -360,6 +419,7 @@ model TournamentLeaderboard {
   updatedAt DateTime @updatedAt
 
   @@unique([tournamentId, teamId])
+  @@index([teamId, rank])
 }
 
 model TeamRankingHistory {
@@ -384,6 +444,7 @@ model TeamRankingHistory {
   createdAt DateTime @default(now())
 
   @@unique([tournamentId, teamId, matchId])
+  @@index([teamId, createdAt])
 }
 
 model TournamentAnnouncement {
@@ -400,12 +461,14 @@ model TournamentAnnouncement {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([tournamentId, createdAt])
 }
 
 model AuditLog {
   id String @id @default(cuid())
 
-  userId String?
+  userId  String?
   actorId String?
 
   action String
@@ -421,6 +484,10 @@ model AuditLog {
   newValue String?
 
   createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
 }
 
 model Notification {
@@ -436,4 +503,6 @@ model Notification {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   metadata  String?
+
+  @@index([userId, isRead, createdAt])
 }

@@ -17,9 +17,11 @@ import { UploadsModule } from './modules/uploads/uploads.module';
 import { LandingModule } from './modules/landing/landing.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { SecurityModule } from './modules/auth/security.module';
 
 @Module({
   imports: [
+    SecurityModule,
     DatabaseModule,
     UsersModule,
     AuthModule,

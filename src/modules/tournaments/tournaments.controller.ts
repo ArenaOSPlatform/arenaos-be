@@ -20,6 +20,7 @@ import { RegisterTeamDto } from './dto/register-team.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
 import { Roles } from '../auth/decorator/roles.decorator';
 import { UserRole } from '../auth/constants/user-role';
+import { ActionReasonDto } from './dto/action-reason.dto';
 
 @Controller('tournaments')
 export class TournamentsController {
@@ -84,8 +85,17 @@ export class TournamentsController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/cancel')
-  cancelTournament(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    return this.tournamentsService.cancelTournament(id, user.sub, user.role);
+  cancelTournament(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ActionReasonDto,
+  ) {
+    return this.tournamentsService.cancelTournament(
+      id,
+      user.sub,
+      user.role,
+      dto.reason,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -171,7 +181,8 @@ export class TournamentsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.PLAYER)
   @Post(':id/register-team')
   registerTeam(
     @Param('id') id: string,

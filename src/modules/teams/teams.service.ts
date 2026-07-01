@@ -73,22 +73,66 @@ export class TeamsService {
     }
   }
 
+  private async assertUserHasNoActiveTeam(
+    userId: string,
+    targetTeamId?: string,
+  ) {
+    const currentMembership = await this.prisma.teamMember.findFirst({
+      where: {
+        userId,
+        ...(targetTeamId ? { teamId: { not: targetTeamId } } : {}),
+      },
+      include: {
+        team: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (currentMembership) {
+      throw new BadRequestException(
+        `A player can only belong to one team at a time. Current team: ${currentMembership.team.name}`,
+      );
+    }
+  }
+
   async createTeam(captainId: string, dto: CreateTeamDto) {
+    const name = dto.name?.trim();
+    const game = dto.game?.trim();
+    const region = dto.region?.trim();
+
+    if (!name) {
+      throw new BadRequestException('Team name is required');
+    }
+
+    if (!game) {
+      throw new BadRequestException('Team game is required');
+    }
+
+    if (!region) {
+      throw new BadRequestException('Team region is required');
+    }
+
     const existing = await this.prisma.team.findUnique({
-      where: { name: dto.name },
+      where: { name },
     });
 
     if (existing) {
       throw new BadRequestException('Team name already exists');
     }
 
+    await this.assertUserHasNoActiveTeam(captainId);
+
     const team = await this.prisma.team.create({
       data: {
-        name: dto.name,
-        game: dto.game,
-        region: dto.region,
-        description: dto.description,
-        logoUrl: dto.logoUrl,
+        name,
+        game,
+        region,
+        description: dto.description?.trim() || null,
+        logoUrl: dto.logoUrl?.trim() || null,
         captainId,
         members: {
           create: {
@@ -307,9 +351,12 @@ export class TeamsService {
     };
   }
 
-  async leaveTeam(userId: string) {
+  async leaveTeam(userId: string, teamId?: string) {
     const membership = await this.prisma.teamMember.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        ...(teamId ? { teamId } : {}),
+      },
       include: {
         team: {
           include: {
@@ -327,7 +374,9 @@ export class TeamsService {
     });
 
     if (!membership) {
-      throw new BadRequestException('You are not in any team');
+      throw new BadRequestException(
+        teamId ? 'You are not in this team' : 'You are not in any team',
+      );
     }
 
     const team = membership.team;
@@ -470,6 +519,8 @@ export class TeamsService {
       throw new BadRequestException('User is already in this team');
     }
 
+    await this.assertUserHasNoActiveTeam(invitee.id, teamId);
+
     const existingInvite = await this.prisma.teamInvite.findUnique({
       where: {
         teamId_inviteeId: {
@@ -584,6 +635,8 @@ export class TeamsService {
       throw new BadRequestException('You are already in this team');
     }
 
+    await this.assertUserHasNoActiveTeam(userId, invite.teamId);
+
     const result = await this.prisma.$transaction([
       this.prisma.teamMember.create({
         data: {
@@ -651,8 +704,8 @@ export class TeamsService {
       data: rejected,
     };
   }
-  async getMyTeam(userId: string) {
-    const teamMember = await this.prisma.teamMember.findFirst({
+  async getMyTeams(userId: string) {
+    const teamMembers = await this.prisma.teamMember.findMany({
       where: { userId },
       include: {
         team: {
@@ -678,9 +731,22 @@ export class TeamsService {
           },
         },
       },
+      orderBy: {
+        joinedAt: 'desc',
+      },
     });
 
-    if (!teamMember) {
+    return {
+      message: 'Get my teams successfully',
+      data: teamMembers.map((member) => member.team),
+    };
+  }
+
+  async getMyTeam(userId: string) {
+    const teamMembers = await this.getMyTeams(userId);
+    const team = teamMembers.data[0] ?? null;
+
+    if (!team) {
       return {
         message: 'You are not in any team',
         data: null,
@@ -689,17 +755,20 @@ export class TeamsService {
 
     return {
       message: 'Get my team successfully',
-      data: teamMember.team,
+      data: team,
     };
   }
 
-  getMyRankingHistory(userId: string) {
-    return this.leaderboardsService.getMyTeamRankingHistory(userId);
+  getMyRankingHistory(userId: string, teamId?: string) {
+    return this.leaderboardsService.getMyTeamRankingHistory(userId, teamId);
   }
 
-  async getMySchedule(userId: string) {
+  async getMySchedule(userId: string, teamId?: string) {
     const teamMember = await this.prisma.teamMember.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        ...(teamId ? { teamId } : {}),
+      },
       include: {
         team: {
           select: {
@@ -712,7 +781,9 @@ export class TeamsService {
 
     if (!teamMember) {
       return {
-        message: 'You are not in any team',
+        message: teamId
+          ? 'You are not in this team'
+          : 'You are not in any team',
         data: [],
       };
     }

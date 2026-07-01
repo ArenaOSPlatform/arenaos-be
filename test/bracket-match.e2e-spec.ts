@@ -53,6 +53,12 @@ type BracketResponse = {
   };
 };
 
+type MatchDetailResponse = {
+  data: {
+    id: string;
+  };
+};
+
 type CaptainFixture = {
   token: string;
   userId: string;
@@ -67,6 +73,31 @@ function assertDefined<T>(
   }
 }
 
+const sensitivePublicMatchFields = [
+  'roomCode',
+  'note',
+  'pendingScoreA',
+  'pendingScoreB',
+  'resultSubmittedBy',
+  'resultSubmittedTeamId',
+  'resultSubmittedAt',
+  'resultEvidenceId',
+  'evidences',
+  'checkIns',
+  'teamACheckedInAt',
+  'teamBCheckedInAt',
+  'teamACheckedInBy',
+  'teamBCheckedInBy',
+];
+
+function expectPublicMatchPayload(match: MatchSummary) {
+  const rawMatch = match as MatchSummary & Record<string, unknown>;
+
+  for (const field of sensitivePublicMatchFields) {
+    expect(rawMatch).not.toHaveProperty(field);
+  }
+}
+
 describe('Bracket + Match E2E', () => {
   const runId = randomUUID();
 
@@ -78,6 +109,7 @@ describe('Bracket + Match E2E', () => {
   let match1Id = '';
   let match2Id = '';
   let finalMatchId = '';
+  let outsiderToken = '';
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -178,6 +210,18 @@ describe('Bracket + Match E2E', () => {
         bestOf: 'BO3',
       })
       .expect(200);
+
+    const publicBracketRes = await request(app.getHttpServer())
+      .get(`/tournaments/${tournamentId}/bracket`)
+      .expect(200);
+
+    const publicBracketBody = publicBracketRes.body as BracketResponse;
+    const publicMatch = publicBracketBody.data.matches.find(
+      (item) => item.id === matchId,
+    );
+
+    assertDefined(publicMatch, 'Public match was not found');
+    expectPublicMatchPayload(publicMatch);
 
     await request(app.getHttpServer())
       .post(`/matches/${matchId}/check-in`)
@@ -315,6 +359,9 @@ describe('Bracket + Match E2E', () => {
     const body = generateRes.body as BracketResponse;
 
     expect(body.data.matches.length).toBe(3);
+    for (const match of body.data.matches) {
+      expectPublicMatchPayload(match);
+    }
 
     const matches = body.data.matches;
 
@@ -338,6 +385,35 @@ describe('Bracket + Match E2E', () => {
     );
     assertDefined(finalMatch, 'Final match was not found');
     finalMatchId = finalMatch.id;
+
+    const outsider = await createCaptainTeam(5);
+    outsiderToken = outsider.token;
+  });
+
+  it('should protect match room and evidence from anonymous or outside users', async () => {
+    await request(app.getHttpServer()).get(`/matches/${match1Id}`).expect(401);
+
+    await request(app.getHttpServer())
+      .get(`/matches/${match1Id}`)
+      .set('Authorization', `Bearer ${outsiderToken}`)
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .get(`/matches/${match1Id}/evidence`)
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .get(`/matches/${match1Id}/evidence`)
+      .set('Authorization', `Bearer ${outsiderToken}`)
+      .expect(403);
+
+    const organizerMatchRes = await request(app.getHttpServer())
+      .get(`/matches/${match1Id}`)
+      .set('Authorization', `Bearer ${organizerToken}`)
+      .expect(200);
+    const organizerMatchBody = organizerMatchRes.body as MatchDetailResponse;
+
+    expect(organizerMatchBody.data.id).toBe(match1Id);
   });
 
   it('should update match 1 result and advance winner to final teamA', async () => {

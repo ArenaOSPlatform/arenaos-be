@@ -5,9 +5,10 @@ import {
   Patch,
   Post,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
@@ -21,6 +22,12 @@ import { RefreshTokenGuard } from './guards/refresh-token.guard';
 import { Roles } from './decorator/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { UserRole } from './constants/user-role';
+import { RateLimit } from './decorator/rate-limit.decorator';
+import { RateLimitGuard } from './guards/rate-limit.guard';
+import {
+  clearRefreshTokenCookie,
+  setRefreshTokenCookie,
+} from './refresh-token-cookie';
 
 type AccessTokenRequest = Request & {
   user: {
@@ -42,35 +49,71 @@ type RefreshTokenRequest = Request & {
 };
 
 @Controller('auth')
+@UseGuards(RateLimitGuard)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  private sendAuthResponse(
+    response: Response,
+    result: {
+      message: string;
+      data: {
+        refreshToken: string;
+        [key: string]: unknown;
+      };
+    },
+  ) {
+    setRefreshTokenCookie(response, result.data.refreshToken);
+    const data: Record<string, unknown> = { ...result.data };
+    delete data.refreshToken;
+
+    return { ...result, data };
+  }
+
   @Post('register')
-  register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  @RateLimit({ limit: 5, windowMs: 15 * 60 * 1000 })
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.register(dto);
+    return this.sendAuthResponse(response, result);
   }
 
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  @RateLimit({ limit: 10, windowMs: 15 * 60 * 1000 })
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.login(dto);
+    return this.sendAuthResponse(response, result);
   }
 
   @Post('google')
-  googleLogin(@Body() dto: GoogleLoginDto) {
-    return this.authService.loginWithGoogle(dto);
+  @RateLimit({ limit: 20, windowMs: 15 * 60 * 1000 })
+  async googleLogin(
+    @Body() dto: GoogleLoginDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.loginWithGoogle(dto);
+    return this.sendAuthResponse(response, result);
   }
 
   @Post('forgot-password')
+  @RateLimit({ limit: 5, windowMs: 60 * 60 * 1000 })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.requestPasswordReset(dto);
   }
 
   @Post('verify-reset-otp')
+  @RateLimit({ limit: 10, windowMs: 15 * 60 * 1000 })
   verifyResetOtp(@Body() dto: VerifyResetOtpDto) {
     return this.authService.verifyPasswordResetOtp(dto);
   }
 
   @Post('reset-password')
+  @RateLimit({ limit: 10, windowMs: 15 * 60 * 1000 })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
   }
@@ -89,14 +132,26 @@ export class AuthController {
 
   @UseGuards(RefreshTokenGuard)
   @Post(['refresh-token', 'refresh'])
-  refresh(@Req() req: RefreshTokenRequest) {
-    return this.authService.refresh(req.user.sub, req.user.refreshToken);
+  async refresh(
+    @Req() req: RefreshTokenRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.refresh(
+      req.user.sub,
+      req.user.refreshToken,
+    );
+    return this.sendAuthResponse(response, result);
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('logout')
-  logout(@Req() req: AccessTokenRequest) {
-    return this.authService.logout(req.user.sub);
+  async logout(
+    @Req() req: AccessTokenRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.logout(req.user.sub);
+    clearRefreshTokenCookie(response);
+    return result;
   }
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)

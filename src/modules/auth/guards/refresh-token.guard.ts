@@ -7,6 +7,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { UserRole, isUserRole } from '../constants/user-role';
+import { getJwtRefreshSecret } from '../../../config/environment';
+import { getRefreshTokenFromRequest } from '../refresh-token-cookie';
 
 type RequestWithRefreshUser = Request & {
   user?: {
@@ -25,25 +27,30 @@ export class RefreshTokenGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<RequestWithRefreshUser>();
     const authHeader = request.headers.authorization;
+    const [type, headerToken] = authHeader?.split(' ') ?? [];
+    const token =
+      type === 'Bearer' && headerToken
+        ? headerToken
+        : getRefreshTokenFromRequest(request);
 
-    if (!authHeader) {
+    if (!token) {
       throw new UnauthorizedException('Missing refresh token');
     }
 
-    const [type, token] = authHeader.split(' ');
-
-    if (type !== 'Bearer' || !token) {
-      throw new UnauthorizedException('Invalid refresh token format');
-    }
-
-    const payload = await this.jwtService.verifyAsync<{
+    let payload: {
       sub: string;
       email: string;
       username: string;
       role: string;
-    }>(token, {
-      secret: process.env.JWT_REFRESH_SECRET || 'arenaos_refresh_secret',
-    });
+    };
+
+    try {
+      payload = await this.jwtService.verifyAsync(token, {
+        secret: getJwtRefreshSecret(),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
 
     if (!isUserRole(payload.role)) {
       throw new UnauthorizedException('Invalid refresh token role');

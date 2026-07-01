@@ -27,6 +27,7 @@ describe('TournamentsService announcements', () => {
   let prisma: {
     tournament: { findUnique: jest.Mock };
     tournamentAnnouncement: { create: jest.Mock };
+    integrationDeliveryLog: { create: jest.Mock };
   };
   let auditLogsService: { createLog: jest.Mock };
   let notificationsService: { createNotification: jest.Mock };
@@ -38,6 +39,9 @@ describe('TournamentsService announcements', () => {
       },
       tournamentAnnouncement: {
         create: jest.fn(),
+      },
+      integrationDeliveryLog: {
+        create: jest.fn().mockResolvedValue({ id: 'delivery-log-1' }),
       },
     };
     auditLogsService = {
@@ -125,6 +129,18 @@ describe('TournamentsService announcements', () => {
       },
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(prisma.integrationDeliveryLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // Jest asymmetric matchers are intentionally untyped.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: expect.objectContaining({
+          provider: 'DISCORD',
+          eventType: 'TOURNAMENT_ANNOUNCEMENT',
+          status: 'SENT',
+          targetId: 'announcement-1',
+        }),
+      }),
+    );
 
     const [url, request] = fetchMock.mock.calls[0] as [URL, RequestInit];
 
@@ -204,6 +220,19 @@ describe('TournamentsService announcements', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(notificationsService.createNotification).toHaveBeenCalledTimes(2);
+    expect(prisma.integrationDeliveryLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // Jest asymmetric matchers are intentionally untyped.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: expect.objectContaining({
+          provider: 'DISCORD',
+          eventType: 'TOURNAMENT_ANNOUNCEMENT',
+          status: 'FAILED',
+          providerStatus: 500,
+          error: 'Server Error',
+        }),
+      }),
+    );
   });
 
   it('creates announcement and posts Discord when there are no team members', async () => {

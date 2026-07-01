@@ -25,14 +25,12 @@ export class NotificationsService {
         metadata: data.metadata ? JSON.stringify(data.metadata) : null,
       },
     });
-    console.log('CREATE NOTIFICATION FOR:', data.userId);
     this.realtimeGateway.sendNotification(data.userId, notification);
 
     return notification;
   }
 
   sendNotification(userId: string, notification: unknown) {
-    console.log('EMIT TO ROOM:', `user:${userId}`);
     this.realtimeGateway.sendNotification(userId, notification);
   }
 

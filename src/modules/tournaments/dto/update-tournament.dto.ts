@@ -30,6 +30,11 @@ export class UpdateTournamentDto {
 
   @IsOptional()
   @IsInt()
+  @Min(2)
+  minTeams?: number;
+
+  @IsOptional()
+  @IsInt()
   @Min(1)
   teamSize?: number;
 

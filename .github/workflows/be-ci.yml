@@ -9,6 +9,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: arenaos_test
+          POSTGRES_USER: arenaos
+          POSTGRES_PASSWORD: arenaos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenaos -d arenaos_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://arenaos:arenaos@localhost:5432/arenaos_test?schema=public
+      TEST_DATABASE_URL: postgresql://arenaos:arenaos@localhost:5432/arenaos_test?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters
+      JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters
 
     steps:
       - name: Checkout code
@@ -20,16 +39,27 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Generate Prisma Client
         run: npx prisma generate
 
+      - name: Prepare E2E database
+        run: |
+          npx prisma migrate deploy
+          npx prisma db seed
+
       - name: Run lint
         run: npm run lint
 
+      - name: Run typecheck
+        run: npm run typecheck
+
       - name: Run tests
-        run: npm run test
+        run: npm run test -- --runInBand
+
+      - name: Run E2E tests
+        run: npm run test:e2e -- --runInBand
 
       - name: Build project
         run: npm run build

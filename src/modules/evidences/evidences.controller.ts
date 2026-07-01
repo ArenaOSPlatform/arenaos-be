@@ -16,11 +16,12 @@ export class EvidencesController {
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateEvidenceDto,
   ) {
-    return this.evidencesService.createEvidence(id, user.sub, dto);
+    return this.evidencesService.createEvidence(id, user.sub, user.role, dto);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get(':id/evidence')
-  getEvidence(@Param('id') id: string) {
-    return this.evidencesService.getMatchEvidences(id);
+  getEvidence(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.evidencesService.getMatchEvidences(id, user.sub, user.role);
   }
 }

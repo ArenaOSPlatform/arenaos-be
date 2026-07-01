@@ -7,10 +7,10 @@ import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import { DisputesService } from './disputes.service';
 
 @Controller()
+@UseGuards(JwtAuthGuard)
 export class DisputesController {
   constructor(private readonly disputesService: DisputesService) {}
 
-  @UseGuards(JwtAuthGuard)
   @Post('matches/:matchId/disputes')
   createDispute(
     @Param('matchId') matchId: string,
@@ -21,16 +21,15 @@ export class DisputesController {
   }
 
   @Get('disputes')
-  getDisputes() {
-    return this.disputesService.getDisputes();
+  getDisputes(@CurrentUser() user: JwtPayload) {
+    return this.disputesService.getDisputes(user.sub, user.role);
   }
 
   @Get('disputes/:id')
-  getDispute(@Param('id') id: string) {
-    return this.disputesService.getDispute(id);
+  getDispute(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.disputesService.getDispute(id, user.sub, user.role);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Post('disputes/:id/request-evidence')
   requestEvidence(
     @Param('id') id: string,
@@ -45,7 +44,6 @@ export class DisputesController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
   @Post('disputes/:id/resolve')
   resolveDispute(
     @Param('id') id: string,

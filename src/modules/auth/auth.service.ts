@@ -1,11 +1,13 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { randomInt, randomUUID } from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { PrismaService } from '../../database/prisma.service';
 import { UsersService } from '../users/users.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -17,6 +19,10 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { VerifyResetOtpDto } from './dto/verify-reset-otp.dto';
 import { PasswordResetMailService } from './password-reset-mail.service';
 import { UserRole, isUserRole } from './constants/user-role';
+import {
+  getJwtAccessSecret,
+  getJwtRefreshSecret,
+} from '../../config/environment';
 
 type AuthSessionUser = {
   id: string;
@@ -24,19 +30,30 @@ type AuthSessionUser = {
   username: string;
   avatarUrl: string | null;
   role: string;
+  status?: string;
 };
 
-type GoogleTokenInfo = {
+type GoogleProfile = {
+  googleId: string;
+  email: string;
+  name: string;
+  avatarUrl: string | null;
+};
+
+type VerifiedGooglePayload = {
   aud?: string;
   sub?: string;
   email?: string;
-  email_verified?: boolean | string;
+  email_verified?: boolean;
   name?: string;
   picture?: string;
 };
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private readonly googleOAuthClient = new OAuth2Client();
+
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
@@ -58,12 +75,12 @@ export class AuthService {
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
-      secret: process.env.JWT_SECRET || 'arenaos_access_secret',
+      secret: getJwtAccessSecret(),
       expiresIn: '15m',
     });
 
     const refreshToken = await this.jwtService.signAsync(payload, {
-      secret: process.env.JWT_REFRESH_SECRET || 'arenaos_refresh_secret',
+      secret: getJwtRefreshSecret(),
       expiresIn: '7d',
     });
 
@@ -78,7 +95,14 @@ export class AuthService {
     return role;
   }
 
+  private assertUserActive(user: { status?: string }): void {
+    if (user.status && user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('Account is not active');
+    }
+  }
+
   private async createAuthSession(user: AuthSessionUser, message: string) {
+    this.assertUserActive(user);
     const role = this.parseUserRole(user.role);
     const tokens = await this.signTokens({
       id: user.id,
@@ -113,27 +137,60 @@ export class AuthService {
       .filter(Boolean);
   }
 
-  private async verifyGoogleIdToken(idToken: string) {
+  private stringifyMetadata(metadata: Record<string, unknown>) {
+    return JSON.stringify(metadata);
+  }
+
+  private async createIntegrationDeliveryLog(input: {
+    provider: string;
+    eventType: string;
+    status: string;
+    recipient?: string;
+    targetType?: string;
+    targetId?: string;
+    providerStatus?: number;
+    providerMessageId?: string;
+    error?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    try {
+      await this.prisma.integrationDeliveryLog.create({
+        data: {
+          provider: input.provider,
+          eventType: input.eventType,
+          status: input.status,
+          recipient: input.recipient,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          providerStatus: input.providerStatus,
+          providerMessageId: input.providerMessageId,
+          error: input.error,
+          metadata: input.metadata
+            ? this.stringifyMetadata(input.metadata)
+            : undefined,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not write integration delivery log: ${message}`);
+    }
+  }
+
+  private async verifyGoogleIdToken(idToken: string): Promise<GoogleProfile> {
     const googleClientIds = this.getGoogleClientIds();
 
     if (googleClientIds.length === 0) {
       throw new BadRequestException('Google login is not configured');
     }
 
-    let tokenInfo: GoogleTokenInfo;
+    let payload: VerifiedGooglePayload | undefined;
 
     try {
-      const response = await fetch(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(
-          idToken,
-        )}`,
-      );
-
-      if (!response.ok) {
-        throw new UnauthorizedException('Invalid Google token');
-      }
-
-      tokenInfo = (await response.json()) as GoogleTokenInfo;
+      const ticket = await this.googleOAuthClient.verifyIdToken({
+        idToken,
+        audience: googleClientIds,
+      });
+      payload = ticket.getPayload();
     } catch (error) {
       if (error instanceof UnauthorizedException) {
         throw error;
@@ -142,24 +199,21 @@ export class AuthService {
       throw new UnauthorizedException('Google token verification failed');
     }
 
-    const emailVerified =
-      tokenInfo.email_verified === true || tokenInfo.email_verified === 'true';
-
     if (
-      !tokenInfo.aud ||
-      !googleClientIds.includes(tokenInfo.aud) ||
-      !tokenInfo.sub ||
-      !tokenInfo.email ||
-      !emailVerified
+      !payload?.aud ||
+      !googleClientIds.includes(payload.aud) ||
+      !payload.sub ||
+      !payload.email ||
+      payload.email_verified !== true
     ) {
       throw new UnauthorizedException('Invalid Google token');
     }
 
     return {
-      googleId: tokenInfo.sub,
-      email: tokenInfo.email.trim().toLowerCase(),
-      name: tokenInfo.name?.trim() || tokenInfo.email.split('@')[0],
-      avatarUrl: tokenInfo.picture?.trim() || null,
+      googleId: payload.sub,
+      email: payload.email.trim().toLowerCase(),
+      name: payload.name?.trim() || payload.email.split('@')[0],
+      avatarUrl: payload.picture?.trim() || null,
     };
   }
 
@@ -216,9 +270,25 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
+    if (resetOtp.attemptCount >= 5) {
+      await this.prisma.passwordResetOtp.update({
+        where: { id: resetOtp.id },
+        data: { consumedAt: new Date() },
+      });
+      throw new BadRequestException('Invalid or expired OTP');
+    }
+
     const isValidOtp = await bcrypt.compare(otp, resetOtp.otpHash);
 
     if (!isValidOtp) {
+      const nextAttemptCount = resetOtp.attemptCount + 1;
+      await this.prisma.passwordResetOtp.update({
+        where: { id: resetOtp.id },
+        data: {
+          attemptCount: nextAttemptCount,
+          consumedAt: nextAttemptCount >= 5 ? new Date() : undefined,
+        },
+      });
       throw new BadRequestException('Invalid or expired OTP');
     }
 
@@ -226,20 +296,25 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
-    const existingEmail = await this.usersService.findByEmail(dto.email);
+    const email = this.normalizeEmail(dto.email);
+    const username = dto.username.trim();
+
+    if (username.length < 3) {
+      throw new BadRequestException('Full name must be at least 3 characters');
+    }
+
+    const existingEmail = await this.usersService.findByEmail(email);
     if (existingEmail) throw new BadRequestException('Email already exists');
 
-    const existingUsername = await this.usersService.findByUsername(
-      dto.username,
-    );
+    const existingUsername = await this.usersService.findByUsername(username);
     if (existingUsername)
-      throw new BadRequestException('Username already exists');
+      throw new BadRequestException('Full name is already in use');
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
     const user = await this.usersService.create({
-      email: dto.email,
-      username: dto.username,
+      email,
+      username,
       passwordHash,
     });
 
@@ -274,6 +349,8 @@ export class AuthService {
     const authUser = user;
 
     if (!authUser) throw new UnauthorizedException('Invalid email or password');
+
+    this.assertUserActive(authUser);
 
     const isMatch = await bcrypt.compare(dto.password, authUser.passwordHash);
     if (!isMatch) throw new UnauthorizedException('Invalid email or password');
@@ -359,7 +436,9 @@ export class AuthService {
     const user = await this.usersService.findByEmail(email);
 
     if (!user) {
-      throw new BadRequestException('Email is not registered');
+      return {
+        message: 'If the email exists, a password reset OTP has been sent',
+      };
     }
 
     const otp = randomInt(100000, 1000000).toString();
@@ -376,7 +455,7 @@ export class AuthService {
       },
     });
 
-    await this.prisma.passwordResetOtp.create({
+    const resetOtp = await this.prisma.passwordResetOtp.create({
       data: {
         userId: user.id,
         otpHash,
@@ -385,13 +464,45 @@ export class AuthService {
     });
 
     try {
-      await this.passwordResetMailService.sendPasswordResetOtp(email, otp);
-    } catch {
+      const delivery = await this.passwordResetMailService.sendPasswordResetOtp(
+        email,
+        otp,
+      );
+
+      await this.createIntegrationDeliveryLog({
+        provider: 'SMTP',
+        eventType: 'PASSWORD_RESET_OTP',
+        status: delivery.sent ? 'SENT' : 'SKIPPED',
+        recipient: email,
+        targetType: 'USER',
+        targetId: user.id,
+        providerMessageId: delivery.messageId,
+        metadata: {
+          configured: delivery.configured,
+          passwordResetOtpId: resetOtp.id,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      await this.createIntegrationDeliveryLog({
+        provider: 'SMTP',
+        eventType: 'PASSWORD_RESET_OTP',
+        status: 'FAILED',
+        recipient: email,
+        targetType: 'USER',
+        targetId: user.id,
+        error: message,
+        metadata: {
+          passwordResetOtpId: resetOtp.id,
+        },
+      });
+
       throw new BadRequestException('Could not send password reset email');
     }
 
     return {
-      message: 'Password reset OTP has been sent',
+      message: 'If the email exists, a password reset OTP has been sent',
     };
   }
 
@@ -454,6 +565,8 @@ export class AuthService {
     if (!authUser || !authUser.refreshTokenHash) {
       throw new UnauthorizedException('Access denied');
     }
+
+    this.assertUserActive(authUser);
 
     const isMatch = await bcrypt.compare(
       refreshToken,
