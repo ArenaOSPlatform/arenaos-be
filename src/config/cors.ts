@@ -18,6 +18,7 @@ export function isAllowedCorsOrigin(origin?: string): boolean {
     return true;
   }
 
+  // Allow localhost and vercel preview deployments
   return (
     getCorsOrigins().includes(origin) || vercelArenaOsOriginPattern.test(origin)
   );
